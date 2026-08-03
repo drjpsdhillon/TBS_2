@@ -1,0 +1,1052 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kite Connect — Time-Based Option Trading Console</title>
+    <meta name="description" content="A premium trading console for time-based option straddles and strangles on Zerodha Kite Connect.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        /* ===== CSS RESET & VARIABLES ===== */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg-primary: #080b11;
+            --bg-secondary: #0f131a;
+            --bg-card: rgba(15, 19, 26, 0.7);
+            --bg-glass: rgba(255, 255, 255, 0.03);
+            --bg-input: rgba(255, 255, 255, 0.04);
+            --border-color: rgba(255, 255, 255, 0.06);
+            --border-focus: rgba(99, 102, 241, 0.5);
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #475569;
+            --accent: #4f46e5;
+            --accent-light: #818cf8;
+            --accent-glow: rgba(99, 102, 241, 0.2);
+            --success: #10b981;
+            --success-bg: rgba(16, 185, 129, 0.1);
+            --error: #ef4444;
+            --error-bg: rgba(239, 68, 68, 0.1);
+            --warning: #f59e0b;
+            --warning-bg: rgba(245, 158, 11, 0.1);
+            --radius-sm: 6px;
+            --radius-md: 10px;
+            --radius-lg: 14px;
+            --transition: all 0.25s ease;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* ===== BACKGROUND GLOWS ===== */
+        .bg-glows {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            pointer-events: none;
+            overflow: hidden;
+        }
+        .bg-glow-1 {
+            position: absolute;
+            top: -20%;
+            left: -20%;
+            width: 60%;
+            height: 60%;
+            background: radial-gradient(circle, rgba(79, 70, 229, 0.08) 0%, transparent 70%);
+        }
+        .bg-glow-2 {
+            position: absolute;
+            bottom: -20%;
+            right: -20%;
+            width: 60%;
+            height: 60%;
+            background: radial-gradient(circle, rgba(16, 185, 129, 0.05) 0%, transparent 70%);
+        }
+
+        /* ===== HEADER ===== */
+        .app-header {
+            position: relative;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 28px;
+            border-bottom: 1px solid var(--border-color);
+            background: rgba(8, 11, 17, 0.85);
+            backdrop-filter: blur(12px);
+        }
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .logo-icon {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, var(--accent), #6366f1);
+            border-radius: var(--radius-sm);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 14px;
+            box-shadow: 0 0 16px rgba(79, 70, 229, 0.3);
+        }
+        .logo-text {
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: -0.2px;
+        }
+        .logo-text span { color: var(--accent-light); }
+        
+        .header-meta {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        .exchange-clock-wrap {
+            font-family: 'JetBrains Mono', monospace;
+            text-align: right;
+        }
+        .exchange-clock {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+        .exchange-label {
+            font-size: 10px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 12px;
+            border-radius: 100px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border: 1px solid var(--border-color);
+        }
+        .status-pill.connected {
+            background: var(--success-bg);
+            color: var(--success);
+            border-color: rgba(16, 185, 129, 0.2);
+        }
+        .status-pill.disconnected {
+            background: var(--error-bg);
+            color: var(--error);
+            border-color: rgba(239, 68, 68, 0.2);
+        }
+        .status-pill.connecting {
+            background: var(--warning-bg);
+            color: var(--warning);
+            border-color: rgba(245, 158, 11, 0.2);
+        }
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+        .connected .status-dot {
+            animation: pulse 1.8s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+        }
+
+        .btn-logout {
+            background: transparent;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: var(--error);
+            padding: 6px 14px;
+            border-radius: var(--radius-sm);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+            display: none;
+        }
+        .btn-logout:hover {
+            background: var(--error-bg);
+        }
+
+        /* ===== MAIN CONTAINER ===== */
+        .main-container {
+            position: relative;
+            z-index: 10;
+            max-width: 1200px;
+            margin: 40px auto;
+            padding: 0 20px;
+        }
+
+        /* ===== LOGIN VIEW ===== */
+        .login-view {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 70vh;
+        }
+        .login-card {
+            width: 100%;
+            max-width: 440px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 36px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+            backdrop-filter: blur(20px);
+        }
+        .login-card h2 {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 4px;
+            letter-spacing: -0.3px;
+        }
+        .login-card .subtitle {
+            color: var(--text-secondary);
+            font-size: 13px;
+            margin-bottom: 24px;
+        }
+
+        .cred-toggle {
+            width: 100%;
+            padding: 10px 14px;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        .cred-toggle .arrow { transition: transform 0.2s; }
+        .cred-toggle.open .arrow { transform: rotate(180deg); }
+        .cred-fields {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+        .cred-fields.open {
+            max-height: 500px;
+        }
+
+        .form-group {
+            margin-bottom: 14px;
+        }
+        .form-group label {
+            display: block;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 10px 14px;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-size: 13px;
+            outline: none;
+            transition: var(--transition);
+        }
+        .form-group input:focus, .form-group select:focus {
+            border-color: var(--border-focus);
+            background: rgba(255, 255, 255, 0.06);
+        }
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .btn-primary {
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, var(--accent), #6366f1);
+            border: none;
+            border-radius: var(--radius-sm);
+            color: #fff;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: var(--transition);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+        }
+        .btn-secondary {
+            width: 100%;
+            padding: 10px;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--text-primary);
+        }
+
+        .divider {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 20px 0;
+            color: var(--text-muted);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+        .divider::before, .divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--border-color);
+        }
+
+        /* TOTP input boxes */
+        .totp-input-group {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            margin-bottom: 12px;
+        }
+        .totp-digit {
+            width: 42px;
+            height: 48px;
+            text-align: center;
+            font-size: 20px;
+            font-weight: 700;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            outline: none;
+            font-family: 'JetBrains Mono', monospace;
+            transition: var(--transition);
+        }
+        .totp-digit:focus {
+            border-color: var(--accent-light);
+            background: rgba(255, 255, 255, 0.07);
+        }
+
+        /* ===== CONSOLE VIEW ===== */
+        .console-view {
+            display: none;
+            animation: fadeIn 0.4s ease-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .console-grid {
+            display: grid;
+            grid-template-columns: 1fr 1.3fr;
+            gap: 28px;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 24px;
+            backdrop-filter: blur(20px);
+        }
+        .card-header {
+            margin-bottom: 20px;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .card-title {
+            font-size: 15px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--accent-light);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Toggles/Selector styling */
+        .segment-control {
+            display: flex;
+            background: var(--bg-input);
+            padding: 3px;
+            border-radius: var(--radius-sm);
+            margin-bottom: 16px;
+        }
+        .segment-btn {
+            flex: 1;
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-weight: 600;
+            padding: 8px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: var(--transition);
+        }
+        .segment-btn.active {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        /* Live target overlay status */
+        .live-overlay {
+            background: rgba(99, 102, 241, 0.04);
+            border: 1px solid rgba(99, 102, 241, 0.15);
+            border-radius: var(--radius-md);
+            padding: 16px;
+            margin-bottom: 20px;
+        }
+        .live-item-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        .live-item-card {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 12px;
+            border-radius: var(--radius-sm);
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            text-align: center;
+        }
+        .live-label {
+            font-size: 10px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .live-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+        .live-strike {
+            font-size: 11px;
+            color: var(--accent-light);
+            margin-top: 2px;
+        }
+
+        /* Logs console */
+        .logs-panel {
+            background: #000;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 16px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            height: 320px;
+            overflow-y: auto;
+            color: #10b981;
+        }
+        .log-line {
+            margin-bottom: 6px;
+            line-height: 1.4;
+        }
+
+        /* Toast Container */
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .toast {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 12px 20px;
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            backdrop-filter: blur(12px);
+            animation: slideIn 0.3s ease-out;
+        }
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        /* Spinner */
+        .spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* General tags */
+        .hint {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+    </style>
+</head>
+<body>
+
+<div class="bg-glows">
+    <div class="bg-glow-1"></div>
+    <div class="bg-glow-2"></div>
+</div>
+
+<!-- ===== HEADER ===== -->
+<header class="app-header">
+    <div class="logo">
+        <div class="logo-icon">T</div>
+        <div class="logo-text">Kite<span>Console</span></div>
+    </div>
+    <div class="header-meta">
+        <div class="exchange-clock-wrap">
+            <div id="exchangeClock" class="exchange-clock">--:--:--</div>
+            <div class="exchange-label">Exchange Time</div>
+        </div>
+        <div id="websocketStatus" class="status-pill disconnected">
+            <span class="status-dot"></span>
+            <span id="websocketText">WebSocket Offline</span>
+        </div>
+        <button id="btnLogout" class="btn-logout" onclick="doLogout()">Logout</button>
+    </div>
+</header>
+
+<div class="main-container">
+
+    <!-- ===== LOGIN VIEW ===== -->
+    <div id="loginView" class="login-view">
+        <div class="login-card">
+            <h2>Welcome Back</h2>
+            <p class="subtitle">Connect to Zerodha Kite to start trading</p>
+
+            <div class="login-sections">
+                <!-- API Credentials Config -->
+                <button class="cred-toggle" id="credToggle" onclick="toggleCredFields()">
+                    <span>⚙ API Credentials Config</span>
+                    <span class="arrow">▼</span>
+                </button>
+                <div class="cred-fields" id="credFields">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="apiKey">API Key</label>
+                            <input type="text" id="apiKey" placeholder="API Key">
+                        </div>
+                        <div class="form-group">
+                            <label for="apiSecret">API Secret</label>
+                            <input type="password" id="apiSecret" placeholder="••••••••">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="username">User ID</label>
+                            <input type="text" id="username" placeholder="User ID">
+                        </div>
+                        <div class="form-group">
+                            <label for="password">Password</label>
+                            <input type="password" id="password" placeholder="••••••••">
+                        </div>
+                    </div>
+                    <button class="btn-secondary" onclick="saveCredentials()" style="margin-top: 8px;">💾 Save Credentials</button>
+                    <div style="margin-bottom: 16px;"></div>
+                </div>
+
+                <!-- Auto Login (Fast Cache Restore) -->
+                <button id="btnAutoLogin" class="btn-primary" onclick="doAutoLogin()" style="margin-top: 10px; background: linear-gradient(135deg, var(--accent), #4f46e5);">
+                    <span class="btn-text">⚡ Re-use Cached Session</span>
+                </button>
+                
+                <div class="divider">OR USE TOTP / ACCESS TOKEN</div>
+
+                <!-- Section 1: 6-Digit TOTP Login -->
+                <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 18px; margin-bottom: 16px;">
+                    <label style="display: block; font-size: 11px; font-weight: 700; color: var(--accent-light); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.8px;">1. Login with 6-Digit TOTP</label>
+                    <div class="totp-input-group" id="totpGroup">
+                        <input class="totp-digit" type="text" maxlength="1" inputmode="numeric" data-index="0" id="totp0">
+                        <input class="totp-digit" type="text" maxlength="1" inputmode="numeric" data-index="1" id="totp1">
+                        <input class="totp-digit" type="text" maxlength="1" inputmode="numeric" data-index="2" id="totp2">
+                        <input class="totp-digit" type="text" maxlength="1" inputmode="numeric" data-index="3" id="totp3">
+                        <input class="totp-digit" type="text" maxlength="1" inputmode="numeric" data-index="4" id="totp4">
+                        <input class="totp-digit" type="text" maxlength="1" inputmode="numeric" data-index="5" id="totp5">
+                    </div>
+                    <button id="btnTotpLogin" class="btn-primary" onclick="doTotpLogin()" style="margin-top:16px;">
+                        <span class="btn-text">Verify & Authorize</span>
+                    </button>
+                </div>
+
+                <!-- Section 2: Direct Access Token Connection -->
+                <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 18px;">
+                    <label style="display: block; font-size: 11px; font-weight: 700; color: var(--accent-light); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.8px;">2. Direct Access Token</label>
+                    <div class="form-group" style="margin-bottom: 12px;">
+                        <input type="text" id="accessToken" placeholder="Paste your access token here">
+                        <p class="hint" style="margin-top: 6px;">
+                            <a href="#" id="lnkGetToken" target="_blank" style="color: var(--accent-light); text-decoration: none; font-weight: 600;">Get Access Token / Authorize App</a>
+                        </p>
+                    </div>
+                    <button id="btnTokenLogin" class="btn-primary" onclick="doTokenLogin()">
+                        <span class="btn-text">Connect with Token</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== CONSOLE VIEW ===== -->
+    <div id="consoleView" class="console-view">
+        <div class="console-grid">
+            
+            <!-- Strategy Configuration Card -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">🕒 Time-Based Straddle / Strangle</div>
+                </div>
+
+                <!-- Strategy Toggle -->
+                <div class="segment-control">
+                    <button id="btnStrangle" class="segment-btn active" onclick="setStrategyType('STRANGLE')">Strangle</button>
+                    <button id="btnStraddle" class="segment-btn" onclick="setStrategyType('STRADDLE')">Straddle</button>
+                </div>
+
+                <form id="strategyForm" onsubmit="saveStrategyConfig(event)">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="indexName">Index Spot</label>
+                            <select id="indexName">
+                                <option value="NIFTY">NIFTY</option>
+                                <option value="BANKNIFTY">BANKNIFTY</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="expirySelect">Weekly Expiry</label>
+                            <select id="expirySelect" required>
+                                <option value="">Loading expiries...</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label id="lblCePremium" for="cePremium">Call Target Premium (CE)</label>
+                            <input type="number" id="cePremium" step="1" value="100" required>
+                        </div>
+                        <div class="form-group">
+                            <label id="lblPePremium" for="pePremium">Put Target Premium (PE)</label>
+                            <input type="number" id="pePremium" step="1" value="100" required>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="stopLossPoints">Stop Loss (Points)</label>
+                            <input type="number" id="stopLossPoints" step="0.5" value="20" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="productSelect">Product Type</label>
+                            <select id="productSelect" disabled>
+                                <option value="MIS" selected>MIS (Intraday)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="startTime">Start Time (Entry)</label>
+                            <input type="text" id="startTime" value="09:20:00" placeholder="HH:MM:SS" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="endTime">End Time (Exit)</label>
+                            <input type="text" id="endTime" value="15:15:00" placeholder="HH:MM:SS" required>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="quantity">Quantity (Multiple of 25)</label>
+                        <input type="number" id="quantity" value="25" step="25" min="25" required>
+                    </div>
+
+                    <button type="submit" id="btnActivateStrategy" class="btn-primary" style="margin-top: 14px; background: linear-gradient(135deg, #10b981, #059669);">
+                        🚀 Activate Strategy Schedulers
+                    </button>
+                </form>
+            </div>
+
+            <!-- Execution Status Card -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">📊 Live Premium Monitor & Execution Logs</div>
+                    <span id="activeBadge" class="status-pill disconnected"><span class="status-dot"></span><span id="activeText">Inactive</span></span>
+                </div>
+
+                <!-- Calculations display overlay -->
+                <div class="live-overlay">
+                    <div style="font-size: 11px; font-weight: 700; color: var(--text-secondary); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Live option Strike Calculations</div>
+                    <div class="live-item-row">
+                        <div class="live-item-card">
+                            <div class="live-label" id="overlayCeTitle">CE CALL</div>
+                            <div class="live-value" id="overlayCeLtp">--</div>
+                            <div class="live-strike" id="overlayCeStrike">--</div>
+                        </div>
+                        <div class="live-item-card">
+                            <div class="live-label" id="overlayPeTitle">PE PUT</div>
+                            <div class="live-value" id="overlayPeLtp">--</div>
+                            <div class="live-strike" id="overlayPeStrike">--</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Execution Terminal Logs -->
+                <div class="logs-panel" id="logsTerminal">
+                    <div class="log-line">Waiting for strategy trigger...</div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+</div>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// UTILITIES
+// ═══════════════════════════════════════════════════════════════
+
+const API = '';
+
+function toast(msg) {
+    const c = document.getElementById('toastContainer');
+    const el = document.createElement('div');
+    el.className = 'toast';
+    el.textContent = msg;
+    c.appendChild(el);
+    setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, 3500);
+}
+
+async function api(path, method = 'GET', body = null) {
+    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(API + path, opts);
+    return res.json();
+}
+
+function toggleCredFields() {
+    const btn = document.getElementById('credToggle');
+    const fields = document.getElementById('credFields');
+    btn.classList.toggle('open');
+    fields.classList.toggle('open');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CREDENTIALS & AUTHLOGIN
+// ═══════════════════════════════════════════════════════════════
+
+async function loadCredentials() {
+    const data = await api('/api/credentials');
+    if (data.api_key) {
+        document.getElementById('apiKey').value = data.api_key;
+        document.getElementById('lnkGetToken').href = `https://kite.zerodha.com/connect/login?api_key=${data.api_key}&v=3`;
+    }
+    if (data.api_secret) document.getElementById('apiSecret').value = data.api_secret;
+    if (data.username) document.getElementById('username').value = data.username;
+    if (data.password) document.getElementById('password').value = data.password;
+}
+
+async function saveCredentials() {
+    const payload = {
+        api_key: document.getElementById('apiKey').value.trim(),
+        api_secret: document.getElementById('apiSecret').value.trim(),
+        username: document.getElementById('username').value.trim(),
+        password: document.getElementById('password').value.trim(),
+    };
+    const res = await api('/api/credentials', 'POST', payload);
+    if (res.status === 'ok') {
+        toast('Credentials saved successfully');
+        document.getElementById('lnkGetToken').href = `https://kite.zerodha.com/connect/login?api_key=${payload.api_key}&v=3`;
+    }
+}
+
+async function doAutoLogin() {
+    const res = await api('/api/login/auto', 'POST');
+    if (res.status === 'ok') {
+        toast(res.message);
+        showDashboard(res.user_name);
+    } else if (res.status === 'need_totp') {
+        toast(res.message);
+    }
+}
+
+function getTotpCode() {
+    let code = '';
+    for (let i = 0; i < 6; i++) code += document.getElementById('totp' + i).value;
+    return code;
+}
+
+async function doTotpLogin() {
+    const code = getTotpCode();
+    if (code.length !== 6) { toast('Enter 6 digit TOTP'); return; }
+    const res = await api('/api/login/totp', 'POST', { totp: code });
+    if (res.status === 'ok') {
+        toast(res.message);
+        showDashboard(res.user_name);
+    } else {
+        toast(res.message || 'Login failed');
+    }
+}
+
+async function doTokenLogin() {
+    const token = document.getElementById('accessToken').value.trim();
+    if (!token) { toast('Enter access token'); return; }
+    const res = await api('/api/login/access-token', 'POST', { access_token: token });
+    if (res.status === 'ok') {
+        toast(res.message);
+        showDashboard(res.user_name);
+    } else {
+        toast(res.message || 'Login failed');
+    }
+}
+
+async function doLogout() {
+    await api('/api/logout', 'POST');
+    toast('Logged out');
+    showLogin();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TOTP DIGIT INPUT NAVIGATION
+// ═══════════════════════════════════════════════════════════════
+
+document.querySelectorAll('.totp-digit').forEach((input, idx, arr) => {
+    input.addEventListener('input', (e) => {
+        const val = e.target.value.replace(/\D/g, '');
+        e.target.value = val;
+        if (val && idx < 5) arr[idx + 1].focus();
+    });
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Backspace' && !e.target.value && idx > 0) {
+            arr[idx - 1].focus();
+            arr[idx - 1].value = '';
+        }
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// VIEW MANAGEMENT
+// ═══════════════════════════════════════════════════════════════
+
+function showDashboard(userName) {
+    document.getElementById('loginView').style.display = 'none';
+    document.getElementById('consoleView').style.display = 'block';
+    document.getElementById('btnLogout').style.display = 'inline-flex';
+    loadExpiries();
+    loadStrategyConfig();
+    startLiveMonitors();
+}
+
+function showLogin() {
+    document.getElementById('loginView').style.display = 'flex';
+    document.getElementById('consoleView').style.display = 'none';
+    document.getElementById('btnLogout').style.display = 'none';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LIVE EXCHANGE CLOCK & STATUS POLLING
+// ═══════════════════════════════════════════════════════════════
+
+function startLiveMonitors() {
+    // Exchange Clock
+    setInterval(() => {
+        const now = new Date();
+        document.getElementById('exchangeClock').textContent = now.toLocaleTimeString('en-IN', { hour12: false });
+    }, 1000);
+
+    // Poll Strategy configuration & Execution logs every second
+    setInterval(async () => {
+        if (document.getElementById('consoleView').style.display !== 'block') return;
+        try {
+            const data = await api('/api/strategy/logs');
+            
+            // WebSocket Ticker Status
+            const wStatus = document.getElementById('websocketStatus');
+            const wText = document.getElementById('websocketText');
+            wStatus.className = `status-pill ${data.ticker_status.toLowerCase()}`;
+            wText.textContent = `WS ${data.ticker_status}`;
+
+            // Calculation overlay updates
+            document.getElementById('overlayCeLtp').textContent = data.selected_ce_ltp > 0 ? `₹${data.selected_ce_ltp.toFixed(2)}` : '--';
+            document.getElementById('overlayCeStrike').textContent = data.selected_ce;
+            document.getElementById('overlayPeLtp').textContent = data.selected_pe_ltp > 0 ? `₹${data.selected_pe_ltp.toFixed(2)}` : '--';
+            document.getElementById('overlayPeStrike').textContent = data.selected_pe;
+
+            // Update log console
+            const term = document.getElementById('logsTerminal');
+            if (data.logs && data.logs.length > 0) {
+                term.innerHTML = data.logs.map(l => `<div class="log-line">${l}</div>`).join('');
+                term.scrollTop = term.scrollHeight;
+            }
+        } catch (e) {
+            // handle error
+        }
+    }, 1000);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// STRATEGY ACTIONS & EXPIRES FETCHING
+// ═══════════════════════════════════════════════════════════════
+
+let activeStrategyType = 'STRANGLE';
+
+function setStrategyType(type) {
+    activeStrategyType = type;
+    document.getElementById('btnStrangle').classList.toggle('active', type === 'STRANGLE');
+    document.getElementById('btnStraddle').classList.toggle('active', type === 'STRADDLE');
+    
+    // In straddle, premium targets CE & PE are identical
+    const ceField = document.getElementById('cePremium');
+    const peField = document.getElementById('pePremium');
+    
+    if (type === 'STRADDLE') {
+        document.getElementById('lblCePremium').textContent = 'Target ATM Premium';
+        document.getElementById('lblPePremium').parentElement.style.opacity = '0.5';
+        peField.disabled = true;
+        
+        ceField.addEventListener('input', syncPremiums);
+        peField.value = ceField.value;
+    } else {
+        document.getElementById('lblCePremium').textContent = 'Call Target Premium (CE)';
+        document.getElementById('lblPePremium').parentElement.style.opacity = '1';
+        peField.disabled = false;
+        
+        ceField.removeEventListener('input', syncPremiums);
+    }
+}
+
+function syncPremiums(e) {
+    document.getElementById('pePremium').value = e.target.value;
+}
+
+async function loadExpiries() {
+    const list = await api('/api/expiries');
+    const select = document.getElementById('expirySelect');
+    if (list && list.length > 0) {
+        select.innerHTML = list.map(d => `<option value="${d}">${d}</option>`).join('');
+    } else {
+        select.innerHTML = '<option value="">No active expiries found</option>';
+    }
+}
+
+async function loadStrategyConfig() {
+    const data = await api('/api/strategy/config');
+    if (data) {
+        setStrategyType(data.strategy_type || 'STRANGLE');
+        document.getElementById('indexName').value = data.index_name || 'NIFTY';
+        document.getElementById('cePremium').value = data.ce_premium || 100;
+        document.getElementById('pePremium').value = data.pe_premium || 100;
+        document.getElementById('stopLossPoints').value = data.sl_points || 20;
+        document.getElementById('productSelect').value = 'MIS';
+        document.getElementById('startTime').value = data.start_time || '09:20:00';
+        document.getElementById('endTime').value = data.end_time || '15:15:00';
+        document.getElementById('quantity').value = data.quantity || 25;
+
+        const badge = document.getElementById('activeBadge');
+        const text = document.getElementById('activeText');
+        if (data.active) {
+            badge.className = 'status-pill connected';
+            text.textContent = 'Active Running';
+            document.getElementById('btnActivateStrategy').textContent = '🛑 Stop Strategy Scheduler';
+            document.getElementById('btnActivateStrategy').style.background = 'linear-gradient(135deg, var(--error), #dc2626)';
+        } else {
+            badge.className = 'status-pill disconnected';
+            text.textContent = 'Inactive';
+            document.getElementById('btnActivateStrategy').textContent = '🚀 Activate Strategy Schedulers';
+            document.getElementById('btnActivateStrategy').style.background = 'linear-gradient(135deg, #10b981, #059669)';
+        }
+    }
+}
+
+async function saveStrategyConfig(e) {
+    e.preventDefault();
+    
+    // Check if we are stopping the strategy
+    const currentText = document.getElementById('btnActivateStrategy').textContent;
+    const isStopping = currentText.includes('Stop');
+    
+    const payload = {
+        active: !isStopping,
+        strategy_type: activeStrategyType,
+        index_name: document.getElementById('indexName').value,
+        expiry: document.getElementById('expirySelect').value,
+        ce_premium: parseFloat(document.getElementById('cePremium').value),
+        pe_premium: parseFloat(document.getElementById('pePremium').value),
+        sl_points: parseFloat(document.getElementById('stopLossPoints').value),
+        start_time: document.getElementById('startTime').value.trim(),
+        end_time: document.getElementById('endTime').value.trim(),
+        quantity: parseInt(document.getElementById('quantity').value),
+    };
+    
+    const res = await api('/api/strategy/config', 'POST', payload);
+    if (res.status === 'ok') {
+        toast(isStopping ? 'Strategy Scheduler Stopped' : 'Strategy Scheduler Activated');
+        loadStrategyConfig();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// INIT INITIAL STATE
+// ═══════════════════════════════════════════════════════════════
+
+(async function init() {
+    await loadCredentials();
+    const res = await api('/api/login/status');
+    if (res.logged_in) {
+        showDashboard(res.user_name);
+    }
+})();
+
+</script>
+</body>
+</html>
