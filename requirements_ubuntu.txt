@@ -4,3 +4,4 @@ kiteconnect
 requests
 pyotp
 eventlet
+Flask-Cors
