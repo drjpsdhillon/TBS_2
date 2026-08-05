@@ -62,7 +62,7 @@ strategy_config = {
     "sl_points": 20.0,
     "start_time": "09:20:00",
     "end_time": "15:15:00",
-    "quantity": 25,
+    "quantity": 65,
 }
 
 # Live execution log stream
@@ -359,11 +359,11 @@ def run_entry_order_placement():
     # Force Product to MIS
     product = "MIS"
 
-    if qty % 25 != 0:
-        log_execution(f"Warning: Quantity ({qty}) must be a multiple of 25. Adjusting quantity.")
-        qty = (qty // 25) * 25
-        if qty < 25:
-            qty = 25
+    if qty % 65 != 0:
+        log_execution(f"Warning: Quantity ({qty}) must be a multiple of 65. Adjusting quantity.")
+        qty = (qty // 65) * 65
+        if qty < 65:
+            qty = 65
 
     if not ce_symbol or not pe_symbol:
         reason = "CE/PE targets not calculated yet because the 20-second calculation step did not find matching options or ran into errors."
