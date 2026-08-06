@@ -208,16 +208,39 @@ def log_execution(message):
         execution_logs.pop(0)
 
 
+# Global state for managing active strategy orders and exit cycle
+strategy_orders = {
+    "CE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_status": None, "sl_modified_to_be": False},
+    "PE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_status": None, "sl_modified_to_be": False},
+    "orders_placed": False
+}
+
+
+def reset_strategy_orders():
+    global strategy_orders
+    strategy_orders = {
+        "CE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_status": None, "sl_modified_to_be": False},
+        "PE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_status": None, "sl_modified_to_be": False},
+        "orders_placed": False
+    }
+
+
 def strategy_thread_loop():
-    global kite_client, strategy_config
+    global kite_client, strategy_config, strategy_orders
     log_execution("Background strategy scheduler thread started.")
     
     calculation_triggered = False
     order_triggered = False
+    exit_triggered = False
 
     while True:
-        time.sleep(1)
+        time.sleep(0.5)  # 500ms polling loop
         if not strategy_config.get("active") or not kite_client:
+            # If strategy was deactivated manually while orders were placed, run exit cycle
+            if strategy_orders.get("orders_placed") and not exit_triggered:
+                log_execution("Strategy deactivated manually. Initiating Exit Cycle...")
+                run_exit_cycle()
+                exit_triggered = True
             calculation_triggered = False
             order_triggered = False
             continue
@@ -228,26 +251,190 @@ def strategy_thread_loop():
             
             # Parse configured times
             start_time_str = strategy_config.get("start_time", "09:20:00")
-            entry_dt = datetime.strptime(f"{today_date} {start_time_str}", "%Y-%m-%d %H:%M:%S")
+            end_time_str = strategy_config.get("end_time", "15:15:00")
             
+            entry_dt = datetime.strptime(f"{today_date} {start_time_str}", "%Y-%m-%d %H:%M:%S")
+            exit_dt = datetime.strptime(f"{today_date} {end_time_str}", "%Y-%m-%d %H:%M:%S")
             pre_entry_dt = entry_dt - timedelta(seconds=20)
             
             # 1. 20 Seconds before start time: Connect Ticker & Do Calculations
             if now >= pre_entry_dt and now < entry_dt:
                 if not calculation_triggered:
                     calculation_triggered = True
+                    reset_strategy_orders()
+                    exit_triggered = False
                     log_execution("Initializing and establishing WebSocket connection (20s before entry)...")
                     start_kite_ticker()
                     run_pre_entry_calculations()
 
             # 2. At Entry Time: Place orders
-            if now >= entry_dt and not order_triggered:
+            if now >= entry_dt and now < exit_dt and not order_triggered:
                 order_triggered = True
                 log_execution("Executing strategy Entry orders now...")
                 run_entry_order_placement()
-                
+
+            # 3. Active Order Monitoring (Every 500ms polling)
+            if strategy_orders.get("orders_placed") and not exit_triggered:
+                poll_orders_and_manage_sl()
+
+            # 4. At Exit Time: Execute Exit Cycle
+            if now >= exit_dt and not exit_triggered:
+                exit_triggered = True
+                log_execution("Exit time reached! Initiating Exit Cycle...")
+                run_exit_cycle()
+                strategy_config["active"] = False
+
         except Exception as e:
             logger.error(f"Error in strategy scheduler: {e}")
+
+
+def poll_orders_and_manage_sl():
+    global kite_client, strategy_orders
+    if not kite_client or not strategy_orders.get("orders_placed"):
+        return
+
+    try:
+        orders = kite_client.orders()
+        order_dict = {str(o.get("order_id")): o for o in orders}
+
+        ce_sl_id = strategy_orders["CE"].get("sl_order_id")
+        pe_sl_id = strategy_orders["PE"].get("sl_order_id")
+
+        ce_sl_order = order_dict.get(str(ce_sl_id)) if ce_sl_id else None
+        pe_sl_order = order_dict.get(str(pe_sl_id)) if pe_sl_id else None
+
+        ce_status = ce_sl_order.get("status") if ce_sl_order else None
+        pe_status = pe_sl_order.get("status") if pe_sl_order else None
+
+        # Check if CE SL filled and PE SL not modified to breakeven yet
+        if ce_status == "COMPLETE" and pe_status in ["OPEN", "TRIGGER PENDING"] and not strategy_orders["PE"]["sl_modified_to_be"]:
+            pe_entry = strategy_orders["PE"]["entry_price"]
+            if pe_entry > 0 and pe_sl_id:
+                log_execution(f"CE Stop-Loss triggered! Modifying PE SL order ({pe_sl_id}) to Breakeven at entry price: {pe_entry:.2f}")
+                modify_sl_to_breakeven("PE", pe_sl_id, pe_entry)
+
+        # Check if PE SL filled and CE SL not modified to breakeven yet
+        if pe_status == "COMPLETE" and ce_status in ["OPEN", "TRIGGER PENDING"] and not strategy_orders["CE"]["sl_modified_to_be"]:
+            ce_entry = strategy_orders["CE"]["entry_price"]
+            if ce_entry > 0 and ce_sl_id:
+                log_execution(f"PE Stop-Loss triggered! Modifying CE SL order ({ce_sl_id}) to Breakeven at entry price: {ce_entry:.2f}")
+                modify_sl_to_breakeven("CE", ce_sl_id, ce_entry)
+
+    except Exception as e:
+        logger.error(f"Error polling order book: {e}")
+
+
+def modify_sl_to_breakeven(leg, sl_order_id, entry_price):
+    global kite_client, strategy_orders, strategy_config
+    try:
+        # Breakeven trigger = sell entry price, limit price with 2% market protection
+        sl_trigger = round(float(entry_price) * 20) / 20
+        sl_price = round((sl_trigger * 1.02) * 20) / 20
+
+        product = strategy_config.get("product", "MIS").upper()
+        if product not in ("MIS", "NRML", "CNC"):
+            product = "MIS"
+
+        kite_client.modify_order(
+            variety=kite_client.VARIETY_REGULAR,
+            order_id=sl_order_id,
+            order_type=kite_client.ORDER_TYPE_SL,
+            trigger_price=float(sl_trigger),
+            price=float(sl_price)
+        )
+        strategy_orders[leg]["sl_modified_to_be"] = True
+        log_execution(f"{leg} SL Order ({sl_order_id}) successfully updated to Breakeven (Trigger: {sl_trigger:.2f}, Limit: {sl_price:.2f}).")
+    except Exception as e:
+        log_execution(f"Failed to modify {leg} SL order ({sl_order_id}) to breakeven: {e}")
+
+
+def run_exit_cycle():
+    global kite_client, strategy_config, strategy_orders
+    if not kite_client:
+        return
+
+    log_execution("=== EXIT CYCLE STARTED ===")
+
+    # Step 1: Cancel any open, unfilled stop-loss orders
+    for leg in ["CE", "PE"]:
+        sl_id = strategy_orders[leg].get("sl_order_id")
+        if sl_id:
+            try:
+                log_execution(f"Cancelling open SL order for {leg} (Order ID: {sl_id})...")
+                kite_client.cancel_order(variety=kite_client.VARIETY_REGULAR, order_id=sl_id)
+                log_execution(f"Cancelled SL order {sl_id} for {leg}.")
+            except Exception as e:
+                log_execution(f"Notice: SL order {sl_id} cancel response: {e}")
+
+    # Step 2 & 3: Query current prices & square off net positions for active strategy contracts
+    product = strategy_config.get("product", "MIS").upper()
+    if product not in ("MIS", "NRML", "CNC"):
+        product = "MIS"
+
+    try:
+        positions = kite_client.positions().get("net", [])
+        active_symbols = [
+            strategy_orders["CE"].get("symbol"),
+            strategy_orders["PE"].get("symbol")
+        ]
+        active_symbols = [s for s in active_symbols if s]
+
+        for pos in positions:
+            symbol = pos.get("tradingsymbol")
+            net_qty = pos.get("quantity", 0)
+
+            # Match either strategy symbols or active NFO positions with non-zero qty
+            if net_qty != 0 and (symbol in active_symbols or pos.get("exchange") == "NFO"):
+                txn_type = kite_client.TRANSACTION_TYPE_BUY if net_qty < 0 else kite_client.TRANSACTION_TYPE_SELL
+                close_qty = abs(net_qty)
+
+                # Fetch current LTP for limit price with market protection
+                try:
+                    ltp_data = kite_client.ltp(f"NFO:{symbol}")
+                    current_ltp = ltp_data.get(f"NFO:{symbol}", {}).get("last_price", 0.0)
+                except Exception:
+                    current_ltp = 0.0
+
+                if current_ltp > 0:
+                    # Buy limit +2%, Sell limit -2% for tick protection
+                    limit_price = (current_ltp * 1.02) if txn_type == kite_client.TRANSACTION_TYPE_BUY else (current_ltp * 0.98)
+                    limit_price = round(limit_price * 20) / 20
+                else:
+                    limit_price = 0.0
+
+                log_execution(f"Squaring off position {symbol} Qty: {close_qty} (LTP: {current_ltp}, Order Price: {limit_price})...")
+
+                if limit_price > 0:
+                    order_id = kite_client.place_order(
+                        variety=kite_client.VARIETY_REGULAR,
+                        exchange=kite_client.EXCHANGE_NFO,
+                        tradingsymbol=symbol,
+                        transaction_type=txn_type,
+                        quantity=int(close_qty),
+                        product=product,
+                        order_type=kite_client.ORDER_TYPE_LIMIT,
+                        price=float(limit_price),
+                        tag="straddle_exit"
+                    )
+                else:
+                    order_id = kite_client.place_order(
+                        variety=kite_client.VARIETY_REGULAR,
+                        exchange=kite_client.EXCHANGE_NFO,
+                        tradingsymbol=symbol,
+                        transaction_type=txn_type,
+                        quantity=int(close_qty),
+                        product=product,
+                        order_type=kite_client.ORDER_TYPE_MARKET,
+                        tag="straddle_exit"
+                    )
+
+                log_execution(f"Square off order placed for {symbol}. Order ID: {order_id}")
+
+    except Exception as e:
+        log_execution(f"Error during exit cycle square off: {e}")
+
+    reset_strategy_orders()
+    log_execution("=== EXIT CYCLE COMPLETED ===")
 
 
 def run_pre_entry_calculations():
@@ -350,22 +537,21 @@ def run_pre_entry_calculations():
 
 
 def run_entry_order_placement():
-    global kite_client, strategy_config
+    global kite_client, strategy_config, strategy_orders
     ce_symbol = strategy_config.get("selected_ce")
     pe_symbol = strategy_config.get("selected_pe")
-    qty = strategy_config.get("quantity", 50)
+    qty = strategy_config.get("quantity", 65)
     sl_points = strategy_config.get("sl_points", 20.0)
 
     # Use product from strategy config (MIS / CNC / NRML)
     product = strategy_config.get("product", "MIS").upper()
-    # Validate product type — for F&O (NFO exchange), only MIS and NRML are valid
     if product not in ("MIS", "NRML", "CNC"):
         product = "MIS"
         log_execution(f"Warning: Unrecognized product type, defaulting to MIS.")
     log_execution(f"Order Product Type: {product} — placing all orders with this product type.")
 
     if qty % 65 != 0:
-        log_execution(f"Warning: Quantity ({qty}) must be a multiple of 25. Adjusting quantity.")
+        log_execution(f"Warning: Quantity ({qty}) must be a multiple of 65/30. Adjusting quantity.")
         qty = (qty // 65) * 65
         if qty < 65:
             qty = 65
@@ -375,6 +561,8 @@ def run_entry_order_placement():
         log_execution(f"Error: {reason}")
         strategy_config["active"] = False
         return
+
+    reset_strategy_orders()
 
     for sym, opt_type in [(ce_symbol, "CE"), (pe_symbol, "PE")]:
         try:
@@ -399,6 +587,10 @@ def run_entry_order_placement():
                 tag="straddle_entry"
             )
             log_execution(f"SELL {sym} Placed successfully. Order ID: {order_id}")
+
+            strategy_orders[opt_type]["symbol"] = sym
+            strategy_orders[opt_type]["entry_price"] = last_ltp
+            strategy_orders[opt_type]["sell_order_id"] = order_id
             
             # Place buy stop-loss order in raw points
             sl_trigger = float(last_ltp) + float(sl_points)
@@ -423,12 +615,14 @@ def run_entry_order_placement():
                 tag="straddle_sl"
             )
             log_execution(f"SL BUY Order for {sym} Set successfully. Order ID: {sl_order_id}")
+            strategy_orders[opt_type]["sl_order_id"] = sl_order_id
+
         except Exception as e:
             reason = str(e)
             log_execution(f"Order placement failed for {sym}. Reason: {reason}")
 
-    strategy_config["active"] = False
-    log_execution("Time-based execution completed. Strategy is now disabled.")
+    strategy_orders["orders_placed"] = True
+    log_execution("All strategy orders placed. Active order monitoring enabled (500ms polling).")
 
 
 # Start background strategy thread
