@@ -383,8 +383,8 @@ def run_exit_cycle():
             symbol = pos.get("tradingsymbol")
             net_qty = pos.get("quantity", 0)
 
-            # Match either strategy symbols or active NFO positions with non-zero qty
-            if net_qty != 0 and (symbol in active_symbols or pos.get("exchange") == "NFO"):
+            # Strictly match ONLY the contracts selected & traded by this strategy
+            if net_qty != 0 and symbol in active_symbols:
                 txn_type = kite_client.TRANSACTION_TYPE_BUY if net_qty < 0 else kite_client.TRANSACTION_TYPE_SELL
                 close_qty = abs(net_qty)
 
