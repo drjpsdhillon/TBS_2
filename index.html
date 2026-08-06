@@ -528,6 +528,46 @@
             font-size: 11px;
             color: var(--text-secondary);
         }
+
+        /* ===== TIME PICKER STYLING ===== */
+        input[type="time"] {
+            width: 100%;
+            padding: 10px 14px;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-size: 14px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+            outline: none;
+            transition: var(--transition);
+            cursor: pointer;
+            letter-spacing: 0.05em;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+        input[type="time"]:focus {
+            border-color: var(--border-focus);
+            background: rgba(255, 255, 255, 0.06);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+        input[type="time"]::-webkit-calendar-picker-indicator {
+            filter: invert(1) opacity(0.5);
+            cursor: pointer;
+            padding: 2px;
+            border-radius: 3px;
+        }
+        input[type="time"]::-webkit-calendar-picker-indicator:hover {
+            filter: invert(1) opacity(1);
+            background: rgba(99, 102, 241, 0.2);
+        }
+        .time-hint {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-top: 4px;
+            font-family: 'JetBrains Mono', monospace;
+        }
     </style>
 </head>
 <body>
@@ -680,23 +720,25 @@
                             <input type="number" id="stopLossPoints" step="0.5" value="20" required>
                         </div>
                         <div class="form-group">
-                            <label for="productSelect">Order Type</label>
+                            <label for="productSelect">Product Type</label>
                             <select id="productSelect">
                                 <option value="MIS" selected>MIS (Intraday)</option>
                                 <option value="CNC">CNC (Delivery)</option>
-                                <option value="NRML">NRML (Normal)</option>
+                                <option value="NRML">NRML (Normal / F&amp;O)</option>
                             </select>
                         </div>
                     </div>
 
                     <div class="form-row">
                         <div class="form-group">
-                            <label for="startTime">Start Time (Entry)</label>
-                            <input type="text" id="startTime" value="09:20:00" placeholder="HH:MM:SS" required>
+                            <label for="startTime">⏰ Entry Time</label>
+                            <input type="time" id="startTime" value="09:20:00" step="1" required title="Click the clock icon to pick time">
+                            <div class="time-hint">Orders placed at this time</div>
                         </div>
                         <div class="form-group">
-                            <label for="endTime">End Time (Exit)</label>
-                            <input type="text" id="endTime" value="15:15:00" placeholder="HH:MM:SS" required>
+                            <label for="endTime">🔔 Exit Time</label>
+                            <input type="time" id="endTime" value="15:15:00" step="1" required title="Click the clock icon to pick time">
+                            <div class="time-hint">Strategy stops at this time</div>
                         </div>
                     </div>
 
@@ -997,6 +1039,7 @@ async function loadStrategyConfig() {
         document.getElementById('pePremium').value = data.pe_premium || 100;
         document.getElementById('stopLossPoints').value = data.sl_points || 20;
         document.getElementById('productSelect').value = data.product || 'MIS';
+        // time inputs accept HH:MM:SS directly when step=1 is set
         document.getElementById('startTime').value = data.start_time || '09:20:00';
         document.getElementById('endTime').value = data.end_time || '15:15:00';
         updateQuantityField(idxName);
@@ -1034,8 +1077,8 @@ async function saveStrategyConfig(e) {
         pe_premium: parseFloat(document.getElementById('pePremium').value),
         sl_points: parseFloat(document.getElementById('stopLossPoints').value),
         product: document.getElementById('productSelect').value,
-        start_time: document.getElementById('startTime').value.trim(),
-        end_time: document.getElementById('endTime').value.trim(),
+        start_time: ensureHHMMSS(document.getElementById('startTime').value.trim()),
+        end_time: ensureHHMMSS(document.getElementById('endTime').value.trim()),
         quantity: parseInt(document.getElementById('quantity').value),
     };
     
@@ -1044,6 +1087,22 @@ async function saveStrategyConfig(e) {
         toast(isStopping ? 'Strategy Scheduler Stopped' : 'Strategy Scheduler Activated');
         loadStrategyConfig();
     }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TIME FORMAT HELPER
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Ensures a time string is in HH:MM:SS format.
+ * input[type="time"] with step=1 returns "HH:MM:SS" in most browsers,
+ * but may return "HH:MM" on some — pad to HH:MM:00 if needed.
+ */
+function ensureHHMMSS(val) {
+    if (!val) return '09:20:00';
+    const parts = val.split(':');
+    if (parts.length === 2) return val + ':00';
+    return val;
 }
 
 // ═══════════════════════════════════════════════════════════════

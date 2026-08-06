@@ -358,6 +358,11 @@ def run_entry_order_placement():
 
     # Use product from strategy config (MIS / CNC / NRML)
     product = strategy_config.get("product", "MIS").upper()
+    # Validate product type — for F&O (NFO exchange), only MIS and NRML are valid
+    if product not in ("MIS", "NRML", "CNC"):
+        product = "MIS"
+        log_execution(f"Warning: Unrecognized product type, defaulting to MIS.")
+    log_execution(f"Order Product Type: {product} — placing all orders with this product type.")
 
     if qty % 65 != 0:
         log_execution(f"Warning: Quantity ({qty}) must be a multiple of 25. Adjusting quantity.")
