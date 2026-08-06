@@ -63,6 +63,7 @@ strategy_config = {
     "start_time": "09:20:00",
     "end_time": "15:15:00",
     "quantity": 25,
+    "product": "MIS",
 }
 
 # Live execution log stream
@@ -356,14 +357,21 @@ def run_entry_order_placement():
     qty = strategy_config.get("quantity", 50)
     sl_points = strategy_config.get("sl_points", 20.0)
 
-    # Force Product to MIS
-    product = "MIS"
+    # Use product from strategy config (MIS / CNC / NRML)
+    product = strategy_config.get("product", "MIS").upper()
 
-    if qty % 25 != 0:
-        log_execution(f"Warning: Quantity ({qty}) must be a multiple of 25. Adjusting quantity.")
-        qty = (qty // 25) * 25
-        if qty < 25:
-            qty = 25
+    # Lot size validation based on index
+    index_name = strategy_config.get("index_name", "NIFTY")
+    if index_name == "BANKNIFTY":
+        lot_size = 30
+    else:  # NIFTY (default)
+        lot_size = 65
+
+    if qty % lot_size != 0:
+        log_execution(f"Warning: Quantity ({qty}) must be a multiple of {lot_size} for {index_name}. Adjusting quantity.")
+        qty = (qty // lot_size) * lot_size
+        if qty < lot_size:
+            qty = lot_size
 
     if not ce_symbol or not pe_symbol:
         reason = "CE/PE targets not calculated yet because the 20-second calculation step did not find matching options or ran into errors."

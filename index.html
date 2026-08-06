@@ -605,15 +605,10 @@
                 <!-- Section 1: 6-Digit TOTP Login -->
                 <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 18px; margin-bottom: 16px;">
                     <label style="display: block; font-size: 11px; font-weight: 700; color: var(--accent-light); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.8px;">1. Login with 6-Digit TOTP</label>
-                    <div class="totp-input-group" id="totpGroup">
-                        <input class="totp-digit" type="text" maxlength="1" inputmode="numeric" data-index="0" id="totp0">
-                        <input class="totp-digit" type="text" maxlength="1" inputmode="numeric" data-index="1" id="totp1">
-                        <input class="totp-digit" type="text" maxlength="1" inputmode="numeric" data-index="2" id="totp2">
-                        <input class="totp-digit" type="text" maxlength="1" inputmode="numeric" data-index="3" id="totp3">
-                        <input class="totp-digit" type="text" maxlength="1" inputmode="numeric" data-index="4" id="totp4">
-                        <input class="totp-digit" type="text" maxlength="1" inputmode="numeric" data-index="5" id="totp5">
+                    <div class="form-group">
+                        <input type="text" id="totpInput" placeholder="Enter or paste 6-digit TOTP" maxlength="6" inputmode="numeric" autocomplete="one-time-code" style="letter-spacing: 0.15em; font-size: 18px; text-align: center; font-family: 'JetBrains Mono', monospace;">
                     </div>
-                    <button id="btnTotpLogin" class="btn-primary" onclick="doTotpLogin()" style="margin-top:16px;">
+                    <button id="btnTotpLogin" class="btn-primary" onclick="doTotpLogin()" style="margin-top:12px;">
                         <span class="btn-text">Verify & Authorize</span>
                     </button>
                 </div>
@@ -685,9 +680,11 @@
                             <input type="number" id="stopLossPoints" step="0.5" value="20" required>
                         </div>
                         <div class="form-group">
-                            <label for="productSelect">Product Type</label>
-                            <select id="productSelect" disabled>
+                            <label for="productSelect">Order Type</label>
+                            <select id="productSelect">
                                 <option value="MIS" selected>MIS (Intraday)</option>
+                                <option value="CNC">CNC (Delivery)</option>
+                                <option value="NRML">NRML (Normal)</option>
                             </select>
                         </div>
                     </div>
@@ -704,8 +701,8 @@
                     </div>
 
                     <div class="form-group">
-                        <label for="quantity">Quantity (Multiple of 25)</label>
-                        <input type="number" id="quantity" value="25" step="25" min="25" required>
+                        <label for="quantity" id="lblQuantity">Quantity (Multiple of 65 for NIFTY / 30 for BANKNIFTY)</label>
+                        <input type="number" id="quantity" value="65" step="65" min="65" required>
                     </div>
 
                     <button type="submit" id="btnActivateStrategy" class="btn-primary" style="margin-top: 14px; background: linear-gradient(135deg, #10b981, #059669);">
@@ -821,9 +818,7 @@ async function doAutoLogin() {
 }
 
 function getTotpCode() {
-    let code = '';
-    for (let i = 0; i < 6; i++) code += document.getElementById('totp' + i).value;
-    return code;
+    return (document.getElementById('totpInput').value || '').replace(/\D/g, '').trim();
 }
 
 async function doTotpLogin() {
@@ -857,21 +852,16 @@ async function doLogout() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// TOTP DIGIT INPUT NAVIGATION
+// TOTP INPUT — auto-strip non-digits on paste
 // ═══════════════════════════════════════════════════════════════
 
-document.querySelectorAll('.totp-digit').forEach((input, idx, arr) => {
-    input.addEventListener('input', (e) => {
-        const val = e.target.value.replace(/\D/g, '');
-        e.target.value = val;
-        if (val && idx < 5) arr[idx + 1].focus();
-    });
-    input.addEventListener('keydown', (e) => {
-        if (e.key === 'Backspace' && !e.target.value && idx > 0) {
-            arr[idx - 1].focus();
-            arr[idx - 1].value = '';
-        }
-    });
+document.getElementById('totpInput').addEventListener('input', (e) => {
+    e.target.value = e.target.value.replace(/\D/g, '');
+});
+document.getElementById('totpInput').addEventListener('paste', (e) => {
+    e.preventDefault();
+    const pasted = (e.clipboardData || window.clipboardData).getData('text');
+    e.target.value = pasted.replace(/\D/g, '').substring(0, 6);
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -969,6 +959,24 @@ function syncPremiums(e) {
     document.getElementById('pePremium').value = e.target.value;
 }
 
+function updateQuantityField(indexName) {
+    const lotSize = indexName === 'BANKNIFTY' ? 30 : 65;
+    const qtyInput = document.getElementById('quantity');
+    const qtyLabel = document.getElementById('lblQuantity');
+    qtyInput.step = lotSize;
+    qtyInput.min = lotSize;
+    if (qtyLabel) qtyLabel.textContent = `Quantity (Multiple of ${lotSize} for ${indexName})`;
+    // Snap current value to nearest valid lot
+    const current = parseInt(qtyInput.value) || lotSize;
+    const snapped = Math.max(lotSize, Math.round(current / lotSize) * lotSize);
+    qtyInput.value = snapped;
+}
+
+// Update quantity field when index changes
+document.getElementById('indexName').addEventListener('change', (e) => {
+    updateQuantityField(e.target.value);
+});
+
 async function loadExpiries() {
     const list = await api('/api/expiries');
     const select = document.getElementById('expirySelect');
@@ -983,14 +991,16 @@ async function loadStrategyConfig() {
     const data = await api('/api/strategy/config');
     if (data) {
         setStrategyType(data.strategy_type || 'STRANGLE');
-        document.getElementById('indexName').value = data.index_name || 'NIFTY';
+        const idxName = data.index_name || 'NIFTY';
+        document.getElementById('indexName').value = idxName;
         document.getElementById('cePremium').value = data.ce_premium || 100;
         document.getElementById('pePremium').value = data.pe_premium || 100;
         document.getElementById('stopLossPoints').value = data.sl_points || 20;
-        document.getElementById('productSelect').value = 'MIS';
+        document.getElementById('productSelect').value = data.product || 'MIS';
         document.getElementById('startTime').value = data.start_time || '09:20:00';
         document.getElementById('endTime').value = data.end_time || '15:15:00';
-        document.getElementById('quantity').value = data.quantity || 25;
+        updateQuantityField(idxName);
+        document.getElementById('quantity').value = data.quantity || (idxName === 'BANKNIFTY' ? 30 : 65);
 
         const badge = document.getElementById('activeBadge');
         const text = document.getElementById('activeText');
@@ -1023,6 +1033,7 @@ async function saveStrategyConfig(e) {
         ce_premium: parseFloat(document.getElementById('cePremium').value),
         pe_premium: parseFloat(document.getElementById('pePremium').value),
         sl_points: parseFloat(document.getElementById('stopLossPoints').value),
+        product: document.getElementById('productSelect').value,
         start_time: document.getElementById('startTime').value.trim(),
         end_time: document.getElementById('endTime').value.trim(),
         quantity: parseInt(document.getElementById('quantity').value),
