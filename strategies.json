@@ -1,0 +1,82 @@
+[
+    {
+        "id": "strat_default_1",
+        "name": "Nifty Morning Straddle",
+        "active": false,
+        "strategy_type": "STRANGLE",
+        "index_name": "BANKNIFTY",
+        "expiry": "2026-08-25",
+        "ce_premium": 100,
+        "pe_premium": 100,
+        "sl_points": 20,
+        "product": "MIS",
+        "start_time": "09:20:00",
+        "end_time": "15:15:00",
+        "quantity": 30,
+        "status": "Exited",
+        "run_tag": null,
+        "orders": {
+            "CE": {
+                "symbol": null,
+                "entry_price": 0.0,
+                "sell_order_id": null,
+                "sl_order_id": null,
+                "sl_modified_to_be": false
+            },
+            "PE": {
+                "symbol": null,
+                "entry_price": 0.0,
+                "sell_order_id": null,
+                "sl_order_id": null,
+                "sl_modified_to_be": false
+            },
+            "orders_placed": false
+        },
+        "selected_ce": null,
+        "selected_ce_ltp": 0.0,
+        "selected_ce_strike": "--",
+        "selected_pe": null,
+        "selected_pe_ltp": 0.0,
+        "selected_pe_strike": "--",
+        "calculation_triggered": false,
+        "order_triggered": false,
+        "exit_triggered": true,
+        "last_sl_poll_time": 0.0,
+        "_was_active": false
+    },
+    {
+        "name": "Nifty 9:45",
+        "strategy_type": "STRANGLE",
+        "index_name": "NIFTY",
+        "expiry": "2026-08-18",
+        "ce_premium": 40,
+        "pe_premium": 40,
+        "sl_points": 20,
+        "product": "MIS",
+        "start_time": "09:45:00",
+        "end_time": "14:45:00",
+        "quantity": 65,
+        "id": "strat_1786188871848",
+        "active": false,
+        "status": "Idle",
+        "_was_active": false,
+        "calculation_triggered": false,
+        "order_triggered": false
+    },
+    {
+        "name": "Bank Nifty 9:45",
+        "strategy_type": "STRANGLE",
+        "index_name": "BANKNIFTY",
+        "expiry": "2026-08-25",
+        "ce_premium": 80,
+        "pe_premium": 80,
+        "sl_points": 40,
+        "product": "MIS",
+        "start_time": "09:45:00",
+        "end_time": "14:45:00",
+        "quantity": 60,
+        "id": "strat_1786188967272",
+        "active": false,
+        "status": "Idle"
+    }
+]
