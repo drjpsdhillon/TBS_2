@@ -61,7 +61,26 @@
         "status": "Idle",
         "_was_active": false,
         "calculation_triggered": false,
-        "order_triggered": false
+        "order_triggered": false,
+        "orders": {
+            "CE": {
+                "symbol": null,
+                "entry_price": 0.0,
+                "sell_order_id": null,
+                "sl_order_id": null,
+                "sl_modified_to_be": false
+            },
+            "PE": {
+                "symbol": null,
+                "entry_price": 0.0,
+                "sell_order_id": null,
+                "sl_order_id": null,
+                "sl_modified_to_be": false
+            },
+            "orders_placed": false
+        },
+        "exit_triggered": false,
+        "last_sl_poll_time": 0.0
     },
     {
         "name": "Bank Nifty 9:45",
@@ -77,6 +96,73 @@
         "quantity": 60,
         "id": "strat_1786188967272",
         "active": false,
-        "status": "Idle"
+        "status": "Idle",
+        "orders": {
+            "CE": {
+                "symbol": null,
+                "entry_price": 0.0,
+                "sell_order_id": null,
+                "sl_order_id": null,
+                "sl_modified_to_be": false
+            },
+            "PE": {
+                "symbol": null,
+                "entry_price": 0.0,
+                "sell_order_id": null,
+                "sl_order_id": null,
+                "sl_modified_to_be": false
+            },
+            "orders_placed": false
+        },
+        "calculation_triggered": false,
+        "order_triggered": false,
+        "exit_triggered": false,
+        "last_sl_poll_time": 0.0,
+        "_was_active": false
+    },
+    {
+        "name": "test1",
+        "strategy_type": "STRANGLE",
+        "index_name": "NIFTY",
+        "expiry": "2026-08-11",
+        "ce_premium": 30,
+        "pe_premium": 30,
+        "sl_points": 20,
+        "product": "MIS",
+        "start_time": "17:42:00",
+        "end_time": "17:45:00",
+        "quantity": 65,
+        "id": "strat_1786190976360",
+        "active": false,
+        "status": "Exited",
+        "_was_active": true,
+        "calculation_triggered": true,
+        "order_triggered": true,
+        "exit_triggered": false,
+        "last_sl_poll_time": 1786191135.6329546,
+        "run_tag": null,
+        "selected_ce": "NIFTY2681124850CE",
+        "selected_ce_ltp": 27.3,
+        "selected_ce_strike": 24850.0,
+        "selected_pe": "NIFTY2681124350PE",
+        "selected_pe_ltp": 26.7,
+        "selected_pe_strike": 24350.0,
+        "orders": {
+            "CE": {
+                "symbol": null,
+                "entry_price": 0.0,
+                "sell_order_id": null,
+                "sl_order_id": null,
+                "sl_modified_to_be": false
+            },
+            "PE": {
+                "symbol": null,
+                "entry_price": 0.0,
+                "sell_order_id": null,
+                "sl_order_id": null,
+                "sl_modified_to_be": false
+            },
+            "orders_placed": false
+        }
     }
 ]

@@ -4,3 +4,4 @@ login.py
 order_placement.py
 websocket.py
 session_cache.json
+__pycache__

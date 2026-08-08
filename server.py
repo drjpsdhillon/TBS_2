@@ -381,6 +381,10 @@ strategy_config = strategies_store[0]
 execution_logs = []
 ticker_thread = None
 
+# Cached LTP data for the logs overlay (updated every 10s by background refresh)
+_cached_ltp_data = {}
+_cached_ltp_ts = 0.0
+
 STRATEGY_TAGS = {"straddle_entry", "straddle_sl", "straddle_exit"}
 
 def get_or_create_strat_tag(strat):
@@ -899,6 +903,202 @@ def run_entry_order_placement():
     log_execution("All strategy orders placed. Active order monitoring enabled (5-second polling interval for SL & Breakeven).")
 
 
+# ========================================================================
+# PER-STRATEGY PRE-ENTRY CALCULATIONS & ORDER PLACEMENT
+# (Called by the multi-strategy scheduler for each independent strategy)
+# ========================================================================
+
+def run_pre_entry_calculations_for(strat):
+    """Calculate and store the nearest CE/PE option contracts for a given strategy dict."""
+    global kite_client, instruments_cache
+    if not instruments_cache:
+        cache_nfo_instruments()
+
+    sname = strat.get("name", "Strategy")
+    index_name = strat.get("index_name", "NIFTY")
+    expiry = strat.get("expiry")
+    target_ce = strat.get("ce_premium", 100.0)
+    target_pe = strat.get("pe_premium", 100.0)
+
+    if not expiry:
+        log_execution(f"[{sname}] Error: No expiry date configured for calculations.")
+        return
+
+    # Filter instruments matching name and expiry
+    candidates = [
+        i for i in instruments_cache
+        if i.get("name") == index_name and str(i.get("expiry")) == expiry
+    ]
+
+    if not candidates:
+        log_execution(f"[{sname}] No option instruments found for {index_name} on expiry {expiry}")
+        return
+
+    log_execution(f"[{sname}] Filtering {len(candidates)} option contracts for {index_name} ({expiry}). Fetching LTPs...")
+
+    # Get spot LTP for range narrowing
+    spot_symbol = SPOT_SYMBOL_MAP.get(index_name, f"NSE:{index_name}")
+    spot_ltp = 0.0
+    try:
+        spot_data = kite_client.ltp(spot_symbol)
+        if spot_symbol in spot_data:
+            spot_ltp = spot_data[spot_symbol]["last_price"]
+            log_execution(f"[{sname}] Current {index_name} Spot LTP: {spot_ltp}")
+    except Exception as e:
+        logger.warning(f"[{sname}] Could not get index spot LTP: {e}")
+
+    # Narrow candidates near spot price (+/- 10% range)
+    narrowed = []
+    if spot_ltp > 0:
+        range_val = spot_ltp * 0.10
+        for c in candidates:
+            try:
+                strike = float(c.get("strike", 0))
+                if abs(strike - spot_ltp) <= range_val:
+                    narrowed.append(c)
+            except ValueError:
+                pass
+    if not narrowed:
+        narrowed = candidates[:200]
+
+    # Query LTP for narrowed candidates in chunks of 100
+    ltp_query_list = [f"NFO:{c['tradingsymbol']}" for c in narrowed]
+    ltp_results = {}
+    for i in range(0, len(ltp_query_list), 100):
+        chunk = ltp_query_list[i:i+100]
+        try:
+            chunk_res = kite_client.ltp(chunk)
+            ltp_results.update(chunk_res)
+        except Exception as e:
+            logger.error(f"[{sname}] Error querying LTP chunk: {e}")
+
+    closest_ce_inst = None
+    closest_pe_inst = None
+    min_ce_diff = float("inf")
+    min_pe_diff = float("inf")
+
+    for inst in narrowed:
+        key = f"NFO:{inst['tradingsymbol']}"
+        if key in ltp_results:
+            price = ltp_results[key]["last_price"]
+            itype = inst["instrument_type"]
+
+            if itype == "CE":
+                diff = abs(price - target_ce)
+                if diff < min_ce_diff:
+                    min_ce_diff = diff
+                    closest_ce_inst = (inst, price)
+            elif itype == "PE":
+                diff = abs(price - target_pe)
+                if diff < min_pe_diff:
+                    min_pe_diff = diff
+                    closest_pe_inst = (inst, price)
+
+    if closest_ce_inst:
+        opt, ltp = closest_ce_inst
+        strat["selected_ce"] = opt["tradingsymbol"]
+        strat["selected_ce_ltp"] = ltp
+        strat["selected_ce_strike"] = opt["strike"]
+        log_execution(f"[{sname}] Selected CE: {opt['tradingsymbol']} (Strike {opt['strike']}) LTP: {ltp} (Target: {target_ce})")
+    else:
+        log_execution(f"[{sname}] Warning: No CE contract found matching target premium ₹{target_ce}")
+
+    if closest_pe_inst:
+        opt, ltp = closest_pe_inst
+        strat["selected_pe"] = opt["tradingsymbol"]
+        strat["selected_pe_ltp"] = ltp
+        strat["selected_pe_strike"] = opt["strike"]
+        log_execution(f"[{sname}] Selected PE: {opt['tradingsymbol']} (Strike {opt['strike']}) LTP: {ltp} (Target: {target_pe})")
+    else:
+        log_execution(f"[{sname}] Warning: No PE contract found matching target premium ₹{target_pe}")
+
+
+def run_entry_order_placement_for(strat):
+    """Place entry sell + stop-loss buy orders for a given strategy dict."""
+    global kite_client
+    sname = strat.get("name", "Strategy")
+    ce_symbol = strat.get("selected_ce")
+    pe_symbol = strat.get("selected_pe")
+    qty = strat.get("quantity", 65)
+    index_name = strat.get("index_name", "NIFTY")
+    sl_points = strat.get("sl_points", 20.0)
+    current_tag = get_or_create_strat_tag(strat)
+
+    product = strat.get("product", "MIS").upper()
+    if product not in ("MIS", "NRML", "CNC"):
+        product = "MIS"
+        log_execution(f"[{sname}] Warning: Unrecognized product type, defaulting to MIS.")
+    log_execution(f"[{sname}] Order Product Type: {product} — Tag: '{current_tag}'")
+
+    lot_size = get_lot_size(index_name)
+    if qty % lot_size != 0:
+        log_execution(f"[{sname}] Warning: Quantity ({qty}) must be a multiple of {lot_size}. Adjusting.")
+        qty = (qty // lot_size) * lot_size
+        if qty < lot_size:
+            qty = lot_size
+
+    if not ce_symbol or not pe_symbol:
+        log_execution(f"[{sname}] Error: CE/PE contracts not calculated. Cannot place orders. Check expiry and premium targets.")
+        strat["active"] = False
+        strat["status"] = "Error"
+        return
+
+    reset_strat_orders(strat, preserve_tag=True)
+
+    for sym, opt_type in [(ce_symbol, "CE"), (pe_symbol, "PE")]:
+        try:
+            last_ltp = strat.get(f"selected_{opt_type.lower()}_ltp", 100.0)
+
+            # Market protection: sell 2% below LTP, round to nearest 0.05
+            sell_price = round((last_ltp * 0.98) * 20) / 20
+
+            log_execution(f"[{sname}] Placing SELL Limit for {sym} Qty:{qty} (LTP:{last_ltp}, Order:{sell_price})...")
+            order_id = kite_client.place_order(
+                variety=kite_client.VARIETY_REGULAR,
+                exchange=kite_client.EXCHANGE_NFO,
+                tradingsymbol=sym,
+                transaction_type=kite_client.TRANSACTION_TYPE_SELL,
+                quantity=int(qty),
+                product=product,
+                order_type=kite_client.ORDER_TYPE_LIMIT,
+                price=float(sell_price),
+                tag=current_tag
+            )
+            log_execution(f"[{sname}] SELL {sym} placed. Order ID: {order_id}")
+
+            strat["orders"][opt_type]["symbol"] = sym
+            strat["orders"][opt_type]["entry_price"] = last_ltp
+            strat["orders"][opt_type]["sell_order_id"] = order_id
+
+            # Stop-loss order: trigger = entry + sl_points, limit = trigger + 2%
+            sl_trigger = round((float(last_ltp) + float(sl_points)) * 20) / 20
+            sl_price = round((sl_trigger * 1.02) * 20) / 20
+
+            log_execution(f"[{sname}] Placing BUY SL for {sym} (Trigger:{sl_trigger:.2f}, Limit:{sl_price:.2f})...")
+            sl_order_id = kite_client.place_order(
+                variety=kite_client.VARIETY_REGULAR,
+                exchange=kite_client.EXCHANGE_NFO,
+                tradingsymbol=sym,
+                transaction_type=kite_client.TRANSACTION_TYPE_BUY,
+                quantity=int(qty),
+                product=product,
+                order_type=kite_client.ORDER_TYPE_SL,
+                price=float(sl_price),
+                trigger_price=float(sl_trigger),
+                tag=current_tag
+            )
+            log_execution(f"[{sname}] SL BUY Order for {sym} set. Order ID: {sl_order_id}")
+            strat["orders"][opt_type]["sl_order_id"] = sl_order_id
+
+        except Exception as e:
+            log_execution(f"[{sname}] Order placement failed for {sym}. Reason: {e}")
+
+    strat["orders"]["orders_placed"] = True
+    strat["status"] = "Active"
+    log_execution(f"[{sname}] All orders placed. SL monitoring active (5s poll interval).")
+    save_strategies(strategies_store)
+
+
 # Start background strategy thread
 sched_thread = threading.Thread(target=strategy_thread_loop, daemon=True)
 sched_thread.start()
@@ -1249,22 +1449,71 @@ def api_strategy_config():
     return jsonify(res)
 
 
+def _safe_strategies_for_json(strats):
+    """Return a JSON-safe copy of strategies_store (converts date objects to strings)."""
+    result = []
+    for s in strats:
+        item = {}
+        for k, v in s.items():
+            if k.startswith("_"):  # skip internal state like _was_active
+                continue
+            if isinstance(v, (datetime, date)):
+                item[k] = v.isoformat()
+            elif isinstance(v, dict):
+                sub = {}
+                for sk, sv in v.items():
+                    sub[sk] = sv.isoformat() if isinstance(sv, (datetime, date)) else sv
+                item[k] = sub
+            else:
+                item[k] = v
+        result.append(item)
+    return result
+
+
+@app.route("/api/strategies/<strat_id>/calculate", methods=["POST"])
+def api_calculate_strategy(strat_id):
+    """Immediately trigger pre-entry strike price calculations for a strategy."""
+    global strategies_store, kite_client
+    if not kite_client:
+        return jsonify({"status": "error", "message": "Not logged in."}), 401
+    target = next((s for s in strategies_store if s.get("id") == strat_id), None)
+    if not target:
+        return jsonify({"status": "error", "message": "Strategy not found."}), 404
+    if not target.get("expiry"):
+        return jsonify({"status": "error", "message": "No expiry set for this strategy."}), 400
+    try:
+        threading.Thread(target=run_pre_entry_calculations_for, args=(target,), daemon=True).start()
+        return jsonify({"status": "ok", "message": f"Strike calculation started for '{target.get('name')}'"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route("/api/strategy/logs", methods=["GET"])
 def api_strategy_logs():
-    global execution_logs, ticker_status, strategies_store
+    global execution_logs, ticker_status, strategies_store, _cached_ltp_data, _cached_ltp_ts
     main_strat = strategies_store[0] if strategies_store else {}
     idx_name = main_strat.get("index_name", "NIFTY")
-    quote = get_spot_and_future_ltp(idx_name)
+
+    # Refresh LTP cache every 10 seconds to avoid rate limiting
+    now_ts = time.time()
+    if kite_client and (now_ts - _cached_ltp_ts) >= 10.0:
+        try:
+            _cached_ltp_data = get_spot_and_future_ltp(idx_name)
+            _cached_ltp_ts = now_ts
+        except Exception:
+            pass
+
+    quote = _cached_ltp_data
     return jsonify({
         "ticker_status": ticker_status,
-        "logs": execution_logs,
-        "strategies": strategies_store,
-        "selected_ce": main_strat.get("selected_ce", "--"),
+        "logs": list(execution_logs),
+        "strategies": _safe_strategies_for_json(strategies_store),
+        "selected_ce": main_strat.get("selected_ce") or "--",
         "selected_ce_ltp": main_strat.get("selected_ce_ltp", 0.0),
-        "selected_ce_strike": main_strat.get("selected_ce_strike", "--"),
-        "selected_pe": main_strat.get("selected_pe", "--"),
+        "selected_ce_strike": main_strat.get("selected_ce_strike") or "--",
+        "selected_pe": main_strat.get("selected_pe") or "--",
         "selected_pe_ltp": main_strat.get("selected_pe_ltp", 0.0),
-        "selected_pe_strike": main_strat.get("selected_pe_strike", "--"),
+        "selected_pe_strike": main_strat.get("selected_pe_strike") or "--",
         "cash_ltp": quote.get("cash_ltp", 0.0),
         "cash_symbol": quote.get("cash_symbol", "--"),
         "future_ltp": quote.get("future_ltp", 0.0),
