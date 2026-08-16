@@ -306,20 +306,24 @@ def create_default_strategy():
         "name": "Nifty Morning Straddle",
         "active": False,
         "strategy_type": "STRANGLE",
+        "entry_action": "SELL",
         "index_name": "NIFTY",
         "expiry": "",
         "ce_premium": 100.0,
         "pe_premium": 100.0,
+        "sl_type": "POINTS",
         "sl_points": 20.0,
+        "sl_percent": 20.0,
         "product": "MIS",
         "start_time": "09:20:00",
         "end_time": "15:15:00",
         "quantity": 65,
+        "reentry_count": 0,
         "status": "Idle",
         "run_tag": None,
         "orders": {
-            "CE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_modified_to_be": False},
-            "PE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_modified_to_be": False},
+            "CE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_modified_to_be": False, "reentries_done": 0},
+            "PE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_modified_to_be": False, "reentries_done": 0},
             "orders_placed": False
         },
         "selected_ce": None,
@@ -345,11 +349,19 @@ def load_strategies():
             if isinstance(strats, list) and len(strats) > 0:
                 for s in strats:
                     s.setdefault("status", "Idle")
+                    s.setdefault("entry_action", "SELL")
+                    s.setdefault("reentry_count", 0)
+                    s.setdefault("sl_type", "POINTS")
+                    s.setdefault("sl_percent", 20.0)
                     s.setdefault("orders", {
-                        "CE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_modified_to_be": False},
-                        "PE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_modified_to_be": False},
+                        "CE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_modified_to_be": False, "reentries_done": 0},
+                        "PE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_modified_to_be": False, "reentries_done": 0},
                         "orders_placed": False
                     })
+                    if "CE" in s["orders"]:
+                        s["orders"]["CE"].setdefault("reentries_done", 0)
+                    if "PE" in s["orders"]:
+                        s["orders"]["PE"].setdefault("reentries_done", 0)
                     s.setdefault("calculation_triggered", False)
                     s.setdefault("order_triggered", False)
                     s.setdefault("exit_triggered", False)
@@ -404,12 +416,112 @@ def get_or_create_strat_tag(strat):
 def reset_strat_orders(strat, preserve_tag=False):
     old_tag = strat.get("run_tag") if preserve_tag else None
     strat["orders"] = {
-        "CE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_modified_to_be": False},
-        "PE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_modified_to_be": False},
+        "CE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_modified_to_be": False, "reentries_done": 0},
+        "PE": {"symbol": None, "entry_price": 0.0, "sell_order_id": None, "sl_order_id": None, "sl_modified_to_be": False, "reentries_done": 0},
         "orders_placed": False
     }
     if not preserve_tag:
         strat["run_tag"] = None
+
+
+INTRADAY_PNL_CSV = os.path.join(BASE_DIR, "intraday_PnL.csv")
+INTRADAY_PNL_XLSX = os.path.join(BASE_DIR, "intraday_PnL.xlsx")
+_last_eod_recorded_date = ""
+
+def record_eod_intraday_pnl(force=False):
+    """Calculates each instrument's daily PnL and saves to intraday_PnL.csv and multi-sheet Excel file."""
+    global kite_client, strategies_store, _last_eod_recorded_date
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    now_time_str = datetime.now().strftime("%H:%M:%S")
+
+    if not force and _last_eod_recorded_date == today_str:
+        return
+
+    if not kite_client:
+        return
+
+    try:
+        log_execution(f"📊 Recording EOD Intraday P&L per instrument at {now_time_str}...")
+        positions_res = kite_client.positions()
+        net_pos = positions_res.get("net", []) if isinstance(positions_res, dict) else (positions_res or [])
+
+        # Map active & historical strategy symbols to instruments
+        strat_symbols_map = {} # tradingsymbol -> instrument_name
+        for s in strategies_store:
+            idx = s.get("index_name", "NIFTY")
+            if s.get("selected_ce"): strat_symbols_map[s["selected_ce"]] = idx
+            if s.get("selected_pe"): strat_symbols_map[s["selected_pe"]] = idx
+            if s.get("orders"):
+                for leg in ["CE", "PE"]:
+                    sym = s["orders"].get(leg, {}).get("symbol")
+                    if sym: strat_symbols_map[sym] = idx
+
+        # Aggregate PnL per instrument
+        instrument_pnl = {"NIFTY": 0.0, "BANKNIFTY": 0.0, "FINNIFTY": 0.0, "MIDCPNIFTY": 0.0, "SENSEX": 0.0}
+        instrument_records = {}
+
+        for p in net_pos:
+            sym = p.get("tradingsymbol", "")
+            pnl = float(p.get("pnl", 0.0) or p.get("m2m", 0.0) or 0.0)
+            
+            # Detect instrument name
+            detected_inst = strat_symbols_map.get(sym)
+            if not detected_inst:
+                for inst_key in ["BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "NIFTY"]:
+                    if sym.startswith(inst_key):
+                        detected_inst = inst_key
+                        break
+
+            if detected_inst:
+                instrument_pnl[detected_inst] = round(instrument_pnl.get(detected_inst, 0.0) + pnl, 2)
+                if detected_inst not in instrument_records:
+                    instrument_records[detected_inst] = []
+                instrument_records[detected_inst].append({
+                    "Date": today_str,
+                    "Time": now_time_str,
+                    "Instrument": detected_inst,
+                    "Contract": sym,
+                    "Qty": p.get("quantity", 0),
+                    "BuyAvg": p.get("buy_price", 0.0) or p.get("average_price", 0.0),
+                    "SellAvg": p.get("sell_price", 0.0),
+                    "LTP": p.get("last_price", 0.0),
+                    "RealizedPnL": round(float(p.get("realised", 0.0) or 0.0), 2),
+                    "UnrealizedPnL": round(float(p.get("unrealised", 0.0) or 0.0), 2),
+                    "TotalPnL": round(pnl, 2)
+                })
+
+        # 1. Write clean structured intraday_PnL.csv (grouped by instrument sections)
+        csv_file_exists = os.path.exists(INTRADAY_PNL_CSV)
+        with open(INTRADAY_PNL_CSV, "a", encoding="utf-8") as f:
+            if not csv_file_exists or os.path.getsize(INTRADAY_PNL_CSV) == 0:
+                f.write("# ==========================================================================\n")
+                f.write("# DAILY INTRADAY P&L REPORT PER INSTRUMENT\n")
+                f.write("# ==========================================================================\n")
+                f.write("Date,Time,Instrument,Total_PnL,Status\n")
+
+            for inst, tot_pnl in instrument_pnl.items():
+                if tot_pnl != 0.0 or inst in instrument_records:
+                    f.write(f"{today_str},{now_time_str},{inst},{tot_pnl:.2f},CLOSED\n")
+
+        # 2. Try writing multi-sheet Excel file if openpyxl/pandas is available
+        try:
+            import pandas as pd
+            excel_path = INTRADAY_PNL_XLSX
+            # Load existing sheets or create new
+            with pd.ExcelWriter(excel_path, engine="openpyxl", mode="a" if os.path.exists(excel_path) else "w") as writer:
+                for inst, records in instrument_records.items():
+                    df = pd.DataFrame(records)
+                    sheet_name = f"{inst}_{today_str.replace('-', '')}"[:31]
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+        except Exception:
+            pass  # Fallback to CSV format
+
+        _last_eod_recorded_date = today_str
+        log_execution(f"✅ Intraday PnL saved to {INTRADAY_PNL_CSV} (Summary: {json.dumps(instrument_pnl)})")
+        return True, instrument_pnl
+    except Exception as e:
+        logger.error(f"Error recording EOD Intraday PnL: {e}")
+        return False, str(e)
 
 
 def strategy_thread_loop():
@@ -423,6 +535,11 @@ def strategy_thread_loop():
 
         now = datetime.now()
         today_date = now.strftime("%Y-%m-%d")
+        now_time = now.strftime("%H:%M:%S")
+
+        # ⏰ Auto-trigger EOD PnL recording at 15:28:00 (or market close 15:30:00)
+        if now_time >= "15:28:00" and now_time <= "15:35:00":
+            record_eod_intraday_pnl()
 
         for strat in list(strategies_store):
             is_active = strat.get("active", False)
@@ -480,7 +597,7 @@ def strategy_thread_loop():
                     log_execution(f"[{strat.get('name')}] Executing Entry orders now...")
                     run_entry_order_placement_for(strat)
 
-                # 3. Active Order Monitoring (5 seconds polling for SL tracking)
+                # 3. Active Order Monitoring (5 seconds polling for SL tracking & Reentry)
                 if strat.get("orders", {}).get("orders_placed") and not strat.get("exit_triggered"):
                     now_ts = time.time()
                     if now_ts - strat.get("last_sl_poll_time", 0.0) >= 5.0:
@@ -516,28 +633,144 @@ def poll_orders_and_manage_sl_for(strat):
         ce_status = ce_sl_order.get("status") if ce_sl_order else None
         pe_status = pe_sl_order.get("status") if pe_sl_order else None
 
+        # Case 1: CE SL Hit -> Move PE to Breakeven & Trigger CE Reentry (if allowed)
         if ce_status == "COMPLETE" and pe_status in ["OPEN", "TRIGGER PENDING"] and not strat["orders"]["PE"]["sl_modified_to_be"]:
             pe_entry = strat["orders"]["PE"]["entry_price"]
             if pe_entry > 0 and pe_sl_id:
                 log_execution(f"[{sname}] CE Stop-Loss triggered! Modifying PE SL order ({pe_sl_id}) to Breakeven at entry price: {pe_entry:.2f}")
                 modify_sl_to_breakeven_for(strat, "PE", pe_sl_id, pe_entry)
 
+            # Check and execute Reentry for CE
+            max_reentry = int(strat.get("reentry_count", 0))
+            done_reentry = int(strat["orders"]["CE"].get("reentries_done", 0))
+            if done_reentry < max_reentry:
+                execute_reentry_for(strat, "CE")
+
+        # Case 2: PE SL Hit -> Move CE to Breakeven & Trigger PE Reentry (if allowed)
         if pe_status == "COMPLETE" and ce_status in ["OPEN", "TRIGGER PENDING"] and not strat["orders"]["CE"]["sl_modified_to_be"]:
             ce_entry = strat["orders"]["CE"]["entry_price"]
             if ce_entry > 0 and ce_sl_id:
                 log_execution(f"[{sname}] PE Stop-Loss triggered! Modifying CE SL order ({ce_sl_id}) to Breakeven at entry price: {ce_entry:.2f}")
                 modify_sl_to_breakeven_for(strat, "CE", ce_sl_id, ce_entry)
 
+            # Check and execute Reentry for PE
+            max_reentry = int(strat.get("reentry_count", 0))
+            done_reentry = int(strat["orders"]["PE"].get("reentries_done", 0))
+            if done_reentry < max_reentry:
+                execute_reentry_for(strat, "PE")
+
     except Exception as e:
         logger.error(f"[{sname}] Error polling order book: {e}")
+
+
+def execute_reentry_for(strat, leg):
+    """
+    Places a fresh entry order (SELL or BUY) at original entry price along with its Stop-Loss order
+    for the leg whose SL was hit.
+    """
+    global kite_client, strategies_store
+    sname = strat.get("name", "Strategy")
+    sym = strat["orders"][leg].get("symbol")
+    orig_entry = strat["orders"][leg].get("entry_price", 0.0)
+    qty = strat.get("quantity", 65)
+    current_tag = get_or_create_strat_tag(strat)
+    product = strat.get("product", "MIS").upper()
+    if product not in ("MIS", "NRML", "CNC"):
+        product = "MIS"
+
+    entry_action = strat.get("entry_action", "SELL").upper()
+    if entry_action not in ("BUY", "SELL"):
+        entry_action = "SELL"
+
+    if not sym or orig_entry <= 0:
+        log_execution(f"[{sname}] Cannot re-enter {leg}: missing symbol or original entry price.")
+        return
+
+    strat["orders"][leg]["reentries_done"] = int(strat["orders"][leg].get("reentries_done", 0)) + 1
+    done_count = strat["orders"][leg]["reentries_done"]
+    max_count = int(strat.get("reentry_count", 0))
+
+    log_execution(f"[{sname}] 🔄 Re-entry [{done_count}/{max_count}] triggered for {leg} ({sym}) [{entry_action}] at Original Entry Price: ₹{orig_entry:.2f}")
+
+    try:
+        # 1. Place fresh entry order at original entry price
+        order_price = round(float(orig_entry) * 20) / 20
+        txn_type = kite_client.TRANSACTION_TYPE_BUY if entry_action == "BUY" else kite_client.TRANSACTION_TYPE_SELL
+
+        order_id = kite_client.place_order(
+            variety=kite_client.VARIETY_REGULAR,
+            exchange=kite_client.EXCHANGE_NFO,
+            tradingsymbol=sym,
+            transaction_type=txn_type,
+            quantity=int(qty),
+            product=product,
+            order_type=kite_client.ORDER_TYPE_LIMIT,
+            price=float(order_price),
+            tag=current_tag
+        )
+        strat["orders"][leg]["sell_order_id"] = order_id
+        log_execution(f"[{sname}] Re-entry {entry_action} {sym} placed (Order ID: {order_id}, Price: ₹{order_price:.2f}).")
+
+        # 2. Place fresh stop-loss order for the re-entered leg
+        sl_type = strat.get("sl_type", "POINTS").upper()
+        if entry_action == "BUY":
+            # Long position -> SL is SELL order below entry
+            if sl_type == "PERCENT":
+                sl_percent = float(strat.get("sl_percent", 20.0))
+                calculated_sl = float(order_price) * (1.0 - (sl_percent / 100.0))
+            else:
+                sl_points = float(strat.get("sl_points", 20.0))
+                calculated_sl = float(order_price) - sl_points
+            
+            calculated_sl = max(0.05, calculated_sl)
+            sl_trigger = round(calculated_sl * 20) / 20
+            sl_price = round((sl_trigger * 0.98) * 20) / 20
+            sl_txn = kite_client.TRANSACTION_TYPE_SELL
+        else:
+            # Short position -> SL is BUY order above entry
+            if sl_type == "PERCENT":
+                sl_percent = float(strat.get("sl_percent", 20.0))
+                calculated_sl = float(order_price) * (1.0 + (sl_percent / 100.0))
+            else:
+                sl_points = float(strat.get("sl_points", 20.0))
+                calculated_sl = float(order_price) + sl_points
+
+            sl_trigger = round(calculated_sl * 20) / 20
+            sl_price = round((sl_trigger * 1.02) * 20) / 20
+            sl_txn = kite_client.TRANSACTION_TYPE_BUY
+
+        sl_order_id = kite_client.place_order(
+            variety=kite_client.VARIETY_REGULAR,
+            exchange=kite_client.EXCHANGE_NFO,
+            tradingsymbol=sym,
+            transaction_type=sl_txn,
+            quantity=int(qty),
+            product=product,
+            order_type=kite_client.ORDER_TYPE_SL,
+            price=float(sl_price),
+            trigger_price=float(sl_trigger),
+            tag=current_tag
+        )
+        strat["orders"][leg]["sl_order_id"] = sl_order_id
+        strat["orders"][leg]["sl_modified_to_be"] = False
+        log_execution(f"[{sname}] Re-entry SL Order for {sym} placed (Order ID: {sl_order_id}, Trigger: ₹{sl_trigger:.2f}, Type: {sl_type}).")
+        save_strategies(strategies_store)
+
+    except Exception as e:
+        log_execution(f"[{sname}] Failed to place Re-entry order for {leg} ({sym}): {e}")
 
 
 def modify_sl_to_breakeven_for(strat, leg, sl_order_id, entry_price):
     global kite_client
     sname = strat.get("name", "Strategy")
+    entry_action = strat.get("entry_action", "SELL").upper()
     try:
         sl_trigger = round(float(entry_price) * 20) / 20
-        sl_price = round((sl_trigger * 1.02) * 20) / 20
+        # If BUY entry -> SL was SELL order -> Limit 2% below trigger; If SELL entry -> SL was BUY order -> Limit 2% above trigger
+        if entry_action == "BUY":
+            sl_price = round((sl_trigger * 0.98) * 20) / 20
+        else:
+            sl_price = round((sl_trigger * 1.02) * 20) / 20
 
         product = strat.get("product", "MIS").upper()
         if product not in ("MIS", "NRML", "CNC"):
@@ -707,202 +940,6 @@ def run_exit_cycle_for(strat):
     save_strategies(strategies_store)
 
 
-def run_pre_entry_calculations():
-    global kite_client, strategy_config, instruments_cache
-    if not instruments_cache:
-        cache_nfo_instruments()
-
-    index_name = strategy_config.get("index_name", "NIFTY")
-    expiry = strategy_config.get("expiry")
-    target_ce = strategy_config.get("ce_premium", 100.0)
-    target_pe = strategy_config.get("pe_premium", 100.0)
-
-    if not expiry:
-        log_execution("Error: No expiry date configured for calculations.")
-        return
-
-    # Filter instruments matching name and expiry
-    candidates = [
-        i for i in instruments_cache
-        if i.get("name") == index_name and str(i.get("expiry")) == expiry
-    ]
-
-    if not candidates:
-        log_execution(f"No option instruments found for {index_name} on expiry {expiry}")
-        return
-
-    log_execution(f"Filtering {len(candidates)} option contracts. Fetching LTPs...")
-    
-    spot_symbols = {
-        "NIFTY": "NSE:NIFTY 50",
-        "BANKNIFTY": "NSE:NIFTY BANK",
-        "FINNIFTY": "NSE:NIFTY FIN SERVICE",
-        "MIDCPNIFTY": "NSE:NIFTY MID SELECT"
-    }
-    spot_symbol = spot_symbols.get(index_name, f"NSE:{index_name}")
-    spot_ltp = 0.0
-    try:
-        spot_data = kite_client.ltp(spot_symbol)
-        if spot_symbol in spot_data:
-            spot_ltp = spot_data[spot_symbol]["last_price"]
-            log_execution(f"Current {index_name} Spot Index LTP: {spot_ltp}")
-    except Exception as e:
-        logger.warning(f"Could not get index spot: {e}")
-
-    # Narrow candidates near spot price (+/- 10% range) to speed up ltp query
-    narrowed = []
-    if spot_ltp > 0:
-        range_val = spot_ltp * 0.10
-        for c in candidates:
-            try:
-                strike = float(c.get("strike", 0))
-                if abs(strike - spot_ltp) <= range_val:
-                    narrowed.append(c)
-            except ValueError:
-                pass
-    if not narrowed:
-        narrowed = candidates[:200]
-
-    # Query LTP for narrowed candidates
-    ltp_query_list = [f"NFO:{c['tradingsymbol']}" for c in narrowed]
-    
-    ltp_results = {}
-    for i in range(0, len(ltp_query_list), 100):
-        chunk = ltp_query_list[i:i+100]
-        try:
-            chunk_res = kite_client.ltp(chunk)
-            ltp_results.update(chunk_res)
-        except Exception as e:
-            logger.error(f"Error querying LTP chunk: {e}")
-
-    closest_ce_inst = None
-    closest_pe_inst = None
-    min_ce_diff = float("inf")
-    min_pe_diff = float("inf")
-
-    for inst in narrowed:
-        key = f"NFO:{inst['tradingsymbol']}"
-        if key in ltp_results:
-            price = ltp_results[key]["last_price"]
-            itype = inst["instrument_type"]
-            
-            if itype == "CE":
-                diff = abs(price - target_ce)
-                if diff < min_ce_diff:
-                    min_ce_diff = diff
-                    closest_ce_inst = (inst, price)
-            elif itype == "PE":
-                diff = abs(price - target_pe)
-                if diff < min_pe_diff:
-                    min_pe_diff = diff
-                    closest_pe_inst = (inst, price)
-
-    if closest_ce_inst:
-        opt, ltp = closest_ce_inst
-        strategy_config["selected_ce"] = opt["tradingsymbol"]
-        strategy_config["selected_ce_ltp"] = ltp
-        strategy_config["selected_ce_strike"] = opt["strike"]
-        log_execution(f"Selected CE: {opt['tradingsymbol']} (Strike {opt['strike']}) LTP: {ltp} (Target: {target_ce})")
-    
-    if closest_pe_inst:
-        opt, ltp = closest_pe_inst
-        strategy_config["selected_pe"] = opt["tradingsymbol"]
-        strategy_config["selected_pe_ltp"] = ltp
-        strategy_config["selected_pe_strike"] = opt["strike"]
-        log_execution(f"Selected PE: {opt['tradingsymbol']} (Strike {opt['strike']}) LTP: {ltp} (Target: {target_pe})")
-
-
-def run_entry_order_placement():
-    global kite_client, strategy_config, strategy_orders
-    ce_symbol = strategy_config.get("selected_ce")
-    pe_symbol = strategy_config.get("selected_pe")
-    qty = strategy_config.get("quantity", 65)
-    index_name = strategy_config.get("index_name", "NIFTY")
-    sl_points = strategy_config.get("sl_points", 20.0)
-
-    # Use product from strategy config (MIS / CNC / NRML)
-    product = strategy_config.get("product", "MIS").upper()
-    if product not in ("MIS", "NRML", "CNC"):
-        product = "MIS"
-        log_execution(f"Warning: Unrecognized product type, defaulting to MIS.")
-    log_execution(f"Order Product Type: {product} — placing all orders with this product type.")
-
-    lot_size = get_lot_size(index_name)
-    if qty % lot_size != 0:
-        log_execution(f"Warning: Quantity ({qty}) must be a multiple of {lot_size} for {index_name}. Adjusting quantity.")
-        qty = (qty // lot_size) * lot_size
-        if qty < lot_size:
-            qty = lot_size
-
-    if not ce_symbol or not pe_symbol:
-        reason = "CE/PE targets not calculated yet because the 20-second calculation step did not find matching options or ran into errors."
-        log_execution(f"Error: {reason}")
-        strategy_config["active"] = False
-        return
-
-    reset_strategy_orders()
-
-    for sym, opt_type in [(ce_symbol, "CE"), (pe_symbol, "PE")]:
-        try:
-            last_ltp = strategy_config.get(f"selected_{opt_type.lower()}_ltp", 100.0)
-            
-            # Market protection: Sell order should place 2% less than LTP
-            sell_price = last_ltp * 0.98
-            # Tick size alignment: round to nearest 0.05
-            sell_price = round(sell_price * 20) / 20
-
-            log_execution(f"Placing Short Sell Limit Order for {sym} Qty: {qty} with Market Protection (LTP: {last_ltp}, Order Price: {sell_price})...")
-            
-            order_id = kite_client.place_order(
-                variety=kite_client.VARIETY_REGULAR,
-                exchange=kite_client.EXCHANGE_NFO,
-                tradingsymbol=sym,
-                transaction_type=kite_client.TRANSACTION_TYPE_SELL,
-                quantity=int(qty),
-                product=product,
-                order_type=kite_client.ORDER_TYPE_LIMIT,
-                price=float(sell_price),
-                tag="straddle_entry"
-            )
-            log_execution(f"SELL {sym} Placed successfully. Order ID: {order_id}")
-
-            strategy_orders[opt_type]["symbol"] = sym
-            strategy_orders[opt_type]["entry_price"] = last_ltp
-            strategy_orders[opt_type]["sell_order_id"] = order_id
-            
-            # Place buy stop-loss order in raw points
-            sl_trigger = float(last_ltp) + float(sl_points)
-            # Market protection for buy stop-loss order: limit price 2% higher than trigger price
-            sl_price = sl_trigger * 1.02
-            
-            # Align to tick size (0.05)
-            sl_trigger = round(sl_trigger * 20) / 20
-            sl_price = round(sl_price * 20) / 20
-            
-            log_execution(f"Placing BUY SL trigger order for {sym} with Market Protection (Trigger: {sl_trigger:.2f}, Limit Price: {sl_price:.2f})...")
-            sl_order_id = kite_client.place_order(
-                variety=kite_client.VARIETY_REGULAR,
-                exchange=kite_client.EXCHANGE_NFO,
-                tradingsymbol=sym,
-                transaction_type=kite_client.TRANSACTION_TYPE_BUY,
-                quantity=int(qty),
-                product=product,
-                order_type=kite_client.ORDER_TYPE_SL,
-                price=float(sl_price),
-                trigger_price=float(sl_trigger),
-                tag="straddle_sl"
-            )
-            log_execution(f"SL BUY Order for {sym} Set successfully. Order ID: {sl_order_id}")
-            strategy_orders[opt_type]["sl_order_id"] = sl_order_id
-
-        except Exception as e:
-            reason = str(e)
-            log_execution(f"Order placement failed for {sym}. Reason: {reason}")
-
-    strategy_orders["orders_placed"] = True
-    log_execution("All strategy orders placed. Active order monitoring enabled (5-second polling interval for SL & Breakeven).")
-
-
 # ========================================================================
 # PER-STRATEGY PRE-ENTRY CALCULATIONS & ORDER PLACEMENT
 # (Called by the multi-strategy scheduler for each independent strategy)
@@ -1014,21 +1051,27 @@ def run_pre_entry_calculations_for(strat):
 
 
 def run_entry_order_placement_for(strat):
-    """Place entry sell + stop-loss buy orders for a given strategy dict."""
+    """Place entry orders (SELL or BUY) + stop-loss orders for a given strategy dict."""
     global kite_client
     sname = strat.get("name", "Strategy")
     ce_symbol = strat.get("selected_ce")
     pe_symbol = strat.get("selected_pe")
     qty = strat.get("quantity", 65)
     index_name = strat.get("index_name", "NIFTY")
-    sl_points = strat.get("sl_points", 20.0)
+    sl_type = strat.get("sl_type", "POINTS").upper()
+    sl_points = float(strat.get("sl_points", 20.0))
+    sl_percent = float(strat.get("sl_percent", 20.0))
     current_tag = get_or_create_strat_tag(strat)
+
+    entry_action = strat.get("entry_action", "SELL").upper()
+    if entry_action not in ("BUY", "SELL"):
+        entry_action = "SELL"
 
     product = strat.get("product", "MIS").upper()
     if product not in ("MIS", "NRML", "CNC"):
         product = "MIS"
         log_execution(f"[{sname}] Warning: Unrecognized product type, defaulting to MIS.")
-    log_execution(f"[{sname}] Order Product Type: {product} — Tag: '{current_tag}'")
+    log_execution(f"[{sname}] Order Product Type: {product} — Action: {entry_action}, Tag: '{current_tag}', SL Type: {sl_type}")
 
     lot_size = get_lot_size(index_name)
     if qty % lot_size != 0:
@@ -1049,37 +1092,62 @@ def run_entry_order_placement_for(strat):
         try:
             last_ltp = strat.get(f"selected_{opt_type.lower()}_ltp", 100.0)
 
-            # Market protection: sell 2% below LTP, round to nearest 0.05
-            sell_price = round((last_ltp * 0.98) * 20) / 20
+            # Market protection:
+            # If SELL -> Place limit 2% below LTP; If BUY -> Place limit 2% above LTP
+            if entry_action == "BUY":
+                order_price = round((last_ltp * 1.02) * 20) / 20
+                entry_txn = kite_client.TRANSACTION_TYPE_BUY
+            else:
+                order_price = round((last_ltp * 0.98) * 20) / 20
+                entry_txn = kite_client.TRANSACTION_TYPE_SELL
 
-            log_execution(f"[{sname}] Placing SELL Limit for {sym} Qty:{qty} (LTP:{last_ltp}, Order:{sell_price})...")
+            log_execution(f"[{sname}] Placing {entry_action} Limit for {sym} Qty:{qty} (LTP:{last_ltp}, Order:{order_price})...")
             order_id = kite_client.place_order(
                 variety=kite_client.VARIETY_REGULAR,
                 exchange=kite_client.EXCHANGE_NFO,
                 tradingsymbol=sym,
-                transaction_type=kite_client.TRANSACTION_TYPE_SELL,
+                transaction_type=entry_txn,
                 quantity=int(qty),
                 product=product,
                 order_type=kite_client.ORDER_TYPE_LIMIT,
-                price=float(sell_price),
+                price=float(order_price),
                 tag=current_tag
             )
-            log_execution(f"[{sname}] SELL {sym} placed. Order ID: {order_id}")
+            log_execution(f"[{sname}] {entry_action} {sym} placed. Order ID: {order_id}")
 
             strat["orders"][opt_type]["symbol"] = sym
             strat["orders"][opt_type]["entry_price"] = last_ltp
             strat["orders"][opt_type]["sell_order_id"] = order_id
 
-            # Stop-loss order: trigger = entry + sl_points, limit = trigger + 2%
-            sl_trigger = round((float(last_ltp) + float(sl_points)) * 20) / 20
-            sl_price = round((sl_trigger * 1.02) * 20) / 20
+            # Stop-loss calculation:
+            if entry_action == "BUY":
+                # Long position -> SL is SELL order below entry
+                if sl_type == "PERCENT":
+                    calculated_sl = float(last_ltp) * (1.0 - (sl_percent / 100.0))
+                else:
+                    calculated_sl = float(last_ltp) - sl_points
 
-            log_execution(f"[{sname}] Placing BUY SL for {sym} (Trigger:{sl_trigger:.2f}, Limit:{sl_price:.2f})...")
+                calculated_sl = max(0.05, calculated_sl)
+                sl_trigger = round(calculated_sl * 20) / 20
+                sl_price = round((sl_trigger * 0.98) * 20) / 20
+                sl_txn = kite_client.TRANSACTION_TYPE_SELL
+            else:
+                # Short position -> SL is BUY order above entry
+                if sl_type == "PERCENT":
+                    calculated_sl = float(last_ltp) * (1.0 + (sl_percent / 100.0))
+                else:
+                    calculated_sl = float(last_ltp) + sl_points
+
+                sl_trigger = round(calculated_sl * 20) / 20
+                sl_price = round((sl_trigger * 1.02) * 20) / 20
+                sl_txn = kite_client.TRANSACTION_TYPE_BUY
+
+            log_execution(f"[{sname}] Placing SL order for {sym} (Trigger:{sl_trigger:.2f}, Limit:{sl_price:.2f}, Mode:{sl_type})...")
             sl_order_id = kite_client.place_order(
                 variety=kite_client.VARIETY_REGULAR,
                 exchange=kite_client.EXCHANGE_NFO,
                 tradingsymbol=sym,
-                transaction_type=kite_client.TRANSACTION_TYPE_BUY,
+                transaction_type=sl_txn,
                 quantity=int(qty),
                 product=product,
                 order_type=kite_client.ORDER_TYPE_SL,
@@ -1087,7 +1155,7 @@ def run_entry_order_placement_for(strat):
                 trigger_price=float(sl_trigger),
                 tag=current_tag
             )
-            log_execution(f"[{sname}] SL BUY Order for {sym} set. Order ID: {sl_order_id}")
+            log_execution(f"[{sname}] SL Order for {sym} set. Order ID: {sl_order_id}")
             strat["orders"][opt_type]["sl_order_id"] = sl_order_id
 
         except Exception as e:
@@ -1321,7 +1389,7 @@ def api_save_strategy():
         found = False
         for s in strategies_store:
             if s.get("id") == strat_id:
-                for k in ["name", "strategy_type", "index_name", "expiry", "ce_premium", "pe_premium", "sl_points", "product", "start_time", "end_time", "quantity"]:
+                for k in ["name", "strategy_type", "entry_action", "index_name", "expiry", "ce_premium", "pe_premium", "sl_type", "sl_points", "sl_percent", "product", "start_time", "end_time", "quantity", "reentry_count"]:
                     if k in data:
                         s[k] = data[k]
                 found = True
@@ -1330,12 +1398,20 @@ def api_save_strategy():
             data["id"] = f"strat_{int(time.time()*1000)}"
             data.setdefault("active", False)
             data.setdefault("status", "Idle")
+            data.setdefault("entry_action", "SELL")
+            data.setdefault("reentry_count", 0)
+            data.setdefault("sl_type", "POINTS")
+            data.setdefault("sl_percent", 20.0)
             strategies_store.append(data)
     else:
         data["id"] = f"strat_{int(time.time()*1000)}"
         data.setdefault("name", f"Strategy {len(strategies_store)+1}")
         data.setdefault("active", False)
         data.setdefault("status", "Idle")
+        data.setdefault("entry_action", "SELL")
+        data.setdefault("reentry_count", 0)
+        data.setdefault("sl_type", "POINTS")
+        data.setdefault("sl_percent", 20.0)
         strategies_store.append(data)
 
     save_strategies(strategies_store)
@@ -1435,7 +1511,7 @@ def api_strategy_config():
             target = strategies_store[0]
             
         if target:
-            for key in ["name", "strategy_type", "index_name", "expiry", "ce_premium", "pe_premium", "sl_points", "product", "start_time", "end_time", "quantity", "active"]:
+            for key in ["name", "strategy_type", "index_name", "expiry", "ce_premium", "pe_premium", "sl_type", "sl_points", "sl_percent", "product", "start_time", "end_time", "quantity", "active", "reentry_count"]:
                 if key in data:
                     target[key] = data[key]
             save_strategies(strategies_store)
@@ -1563,6 +1639,171 @@ def api_get_holdings():
         return jsonify({"status": "ok", "holdings": holdings})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ========================================================================
+# POSITIONAL STRANGLE API ROUTES (pos_strngl.py Multi-Strategy Bridge)
+# ========================================================================
+
+@app.route("/api/pos_strangle/config", methods=["GET", "POST"])
+@app.route("/api/pos_strangle/strategies", methods=["GET", "POST"])
+def api_pos_strangle_strategies():
+    global kite_client
+    try:
+        import pos_strngl
+        if kite_client:
+            pos_strngl.set_kite_client(kite_client)
+
+        if request.method == "POST":
+            data = request.json or {}
+            strat_id = data.get("id")
+            strats = pos_strngl.load_pos_strategies()
+            
+            if strat_id:
+                target = next((s for s in strats if s.get("id") == strat_id), None)
+                if target:
+                    for k in ["name", "index_name", "expiry", "entry_action", "product", "ce_premium", "pe_premium", "sl_type", "ce_sl_percent", "pe_sl_percent", "sl_percent", "sl_points", "tp_percent", "reentry_count", "quantity", "entry_time", "exit_time"]:
+                        if k in data:
+                            target[k] = data[k]
+                else:
+                    new_item = pos_strngl.create_default_pos_strategy(data.get("index_name", "NIFTY"), data.get("name"))
+                    for k, v in data.items():
+                        new_item[k] = v
+                    strats.append(new_item)
+            else:
+                new_item = pos_strngl.create_default_pos_strategy(data.get("index_name", "NIFTY"), data.get("name"))
+                for k, v in data.items():
+                    new_item[k] = v
+                strats.append(new_item)
+
+            pos_strngl.save_pos_strategies(strats)
+            pos_strngl.pos_strategies_store = strats
+            return jsonify({"status": "ok", "strategies": strats, "config": strats[0] if strats else {}})
+        else:
+            strats = pos_strngl.load_pos_strategies()
+            return jsonify({"status": "ok", "strategies": strats, "config": strats[0] if strats else {}})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/pos_strangle/strategies/<strat_id>", methods=["DELETE"])
+def api_pos_strangle_delete(strat_id):
+    try:
+        import pos_strngl
+        strats = pos_strngl.load_pos_strategies()
+        updated = [s for s in strats if s.get("id") != strat_id]
+        pos_strngl.save_pos_strategies(updated)
+        pos_strngl.pos_strategies_store = updated
+        return jsonify({"status": "ok", "strategies": updated})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/pos_strangle/strategies/<strat_id>/toggle", methods=["POST"])
+def api_pos_strangle_toggle_strategy(strat_id):
+    global kite_client
+    try:
+        import pos_strngl
+        if kite_client:
+            pos_strngl.set_kite_client(kite_client)
+        data = request.json or {}
+        active_val = data.get("active", False)
+        strats = pos_strngl.load_pos_strategies()
+        target = next((s for s in strats if s.get("id") == strat_id), None)
+        if not target:
+            return jsonify({"status": "error", "message": "Strategy not found"}), 404
+
+        target["active"] = bool(active_val)
+        target["status"] = "Active" if active_val else "Stopped"
+        pos_strngl.save_pos_strategies(strats)
+        pos_strngl.pos_strategies_store = strats
+        pos_strngl.log_pos(f"[{target.get('name')}] {'ACTIVATED' if active_val else 'STOPPED'} by user.")
+        return jsonify({"status": "ok", "active": target["active"], "status_text": target["status"]})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/pos_strangle/status", methods=["GET"])
+def api_pos_strangle_status():
+    global kite_client
+    try:
+        import pos_strngl
+        if kite_client:
+            pos_strngl.set_kite_client(kite_client)
+        strats = pos_strngl.load_pos_strategies()
+        return jsonify({
+            "status": "ok",
+            "strategies": strats,
+            "logs": list(pos_strngl.pos_logs)
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/pos_strangle/strategies/<strat_id>/calculate", methods=["POST"])
+def api_pos_strangle_calculate_strategy(strat_id):
+    global kite_client
+    try:
+        import pos_strngl
+        if kite_client:
+            pos_strngl.set_kite_client(kite_client)
+        strats = pos_strngl.load_pos_strategies()
+        target = next((s for s in strats if s.get("id") == strat_id), None)
+        if not target:
+            return jsonify({"status": "error", "message": "Strategy not found"}), 404
+
+        ok, msg = pos_strngl.calculate_pos_strikes_for(target)
+        if ok:
+            return jsonify({"status": "ok", "message": msg, "strategy": target})
+        else:
+            return jsonify({"status": "error", "message": msg}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/pos_strangle/strategies/<strat_id>/squareoff", methods=["POST"])
+def api_pos_strangle_squareoff_strategy(strat_id):
+    global kite_client
+    try:
+        import pos_strngl
+        if kite_client:
+            pos_strngl.set_kite_client(kite_client)
+        strats = pos_strngl.load_pos_strategies()
+        target = next((s for s in strats if s.get("id") == strat_id), None)
+        if not target:
+            return jsonify({"status": "error", "message": "Strategy not found"}), 404
+
+        ok, msg = pos_strngl.squareoff_positional_strangle_for(target)
+        return jsonify({"status": "ok" if ok else "error", "message": msg})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/pnl/export", methods=["POST"])
+def api_trigger_pnl_export():
+    """Manually triggers saving intraday PnL to intraday_PnL.csv and returns instrument breakdown."""
+    ok, result = record_eod_intraday_pnl(force=True)
+    if ok:
+        return jsonify({"status": "ok", "message": "Intraday PnL saved to intraday_PnL.csv", "data": result})
+    else:
+        return jsonify({"status": "error", "message": str(result)}), 500
+
+
+@app.route("/api/pnl/download", methods=["GET"])
+def api_download_pnl_csv():
+    """Downloads the intraday_PnL.csv file directly."""
+    if os.path.exists(INTRADAY_PNL_CSV):
+        return send_from_directory(BASE_DIR, "intraday_PnL.csv", as_attachment=True)
+    return jsonify({"status": "error", "message": "intraday_PnL.csv has not been generated yet."}), 404
+
+
+@app.route("/api/pos_strangle/pnl/download", methods=["GET"])
+def api_download_pos_pnl_csv():
+    """Downloads the pos_strategy_PnL.csv file directly."""
+    import pos_strngl
+    if os.path.exists(pos_strngl.POS_PNL_CSV):
+        return send_from_directory(BASE_DIR, "pos_strategy_PnL.csv", as_attachment=True)
+    return jsonify({"status": "error", "message": "pos_strategy_PnL.csv has not been created yet."}), 404
 
 
 @app.route("/")

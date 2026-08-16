@@ -1,7 +1,63 @@
-Flask
-Flask-SocketIO
-kiteconnect
-requests
-pyotp
-eventlet
-Flask-Cors
+# ============================================================
+# Requirements & Setup Guide for Ubuntu / Debian Server
+# Python 3.9 - 3.13 Compatibility
+#
+# 1. System Package Prerequisites (Run on Ubuntu terminal):
+#   sudo apt update
+#   sudo apt install -y python3-pip python3-venv build-essential \
+#                       libssl-dev libffi-dev python3-dev supervisor \
+#                       curl git ufw htop
+#
+# 2. Virtual Environment Setup:
+#   python3 -m venv venv
+#   source venv/bin/activate
+#   pip install --upgrade pip setuptools wheel
+#   pip install -r requirements_ubuntu.txt
+#
+# 3. Running with Master Launcher:
+#   python3 main.py
+#
+# 4. (Optional) Run in background with nohup or systemd / supervisor:
+#   nohup python3 main.py > server.log 2>&1 &
+# ============================================================
+
+# Core Web Framework
+Flask>=3.0.0
+Flask-Cors>=4.0.0
+Flask-SocketIO>=5.3.0
+Werkzeug>=3.0.0
+Jinja2>=3.1.0
+click>=8.1.0
+
+# HTTP & API Connectivity
+requests>=2.31.0
+urllib3>=2.0.0
+certifi>=2023.7.22
+charset-normalizer>=3.3.0
+
+# Zerodha Kite Connect & Ticker Dependencies
+kiteconnect>=4.2.0
+twisted>=22.10.0
+autobahn>=23.6.0
+pyOpenSSL>=23.2.0
+service-identity>=23.1.0
+cffi>=1.15.0
+cryptography>=41.0.0
+pycparser>=2.21
+
+# Networking & WebSockets
+python-socketio>=5.10.0
+python-engineio>=4.8.0
+simple-websocket>=1.0.0
+websocket-client>=1.6.0
+wsproto>=1.2.0
+h11>=0.14.0
+eventlet>=0.35.0; sys_platform != 'win32'
+gunicorn>=21.2.0; sys_platform != 'win32'
+
+# Authentication & Date Handling
+pyotp>=2.9.0
+python-dateutil>=2.8.2
+six>=1.16.0
+
+

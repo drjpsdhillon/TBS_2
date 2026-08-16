@@ -6,3 +6,4 @@ websocket.py
 session_cache.json
 __pycache__
 strategies.json
+pos_strangle.json
