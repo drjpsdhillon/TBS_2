@@ -7,3 +7,4 @@ session_cache.json
 __pycache__
 strategies.json
 pos_strangle.json
+requirements.txt
